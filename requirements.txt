@@ -16,7 +16,7 @@ resampy>=0.4.2
 # Model & Training
 einops>=0.7.0
 rotary-embedding-torch>=0.5.3
-flash-attn>=2.5.0  # Optional: for faster attention
+# flash-attn>=2.5.0  # Install separately: pip install flash-attn --no-build-isolation
 
 # Data
 pandas>=2.0.0

@@ -1,0 +1,211 @@
+# Supertonic v2 TTS - Конфігурація для тренування
+# Реімплементація з підтримкою української мови
+
+# ====== AUDIO CONFIGURATION ======
+audio:
+  sample_rate: 44100
+  n_fft: 2048
+  hop_length: 512
+  win_length: 2048
+  n_mels: 228
+  fmin: 0
+  fmax: 22050
+  window: "hann"
+  center: true
+  pad_mode: "reflect"
+  norm: "slaney"
+  mel_scale: "slaney"
+
+# ====== LATENT SPACE ======
+latent:
+  dim: 24                    # Латентний простір
+  temporal_compression: 6    # Kc - стек фреймів
+  compressed_dim: 144        # dim × compression = 24 × 6
+
+# ====== SPEECH AUTOENCODER ======
+autoencoder:
+  encoder:
+    input_dim: 228           # Mel channels
+    hidden_dim: 512
+    output_dim: 24           # Latent dim
+    num_blocks: 10
+    kernel_size: 7
+    intermediate_mult: 4     # 512 × 4 = 2048
+
+  decoder:
+    input_dim: 24
+    hidden_dim: 512
+    num_blocks: 10
+    kernel_size: 7
+    intermediate_mult: 4
+    dilations: [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
+    causal: true             # Для streaming підтримки
+
+  discriminator:
+    mpd_periods: [2, 3, 5, 7, 11]
+    mrd_fft_sizes: [512, 1024, 2048]
+
+# ====== TEXT-TO-LATENT MODULE ======
+text_to_latent:
+  reference_encoder:
+    input_dim: 144           # Compressed latent
+    hidden_dim: 128
+    num_convnext_blocks: 6
+    num_cross_attn_layers: 2
+    num_output_vectors: 50   # Fixed reference size
+    kernel_size: 5
+    intermediate_mult: 4
+
+  text_encoder:
+    vocab_size: 512          # Extended for multilingual
+    embed_dim: 128
+    hidden_dim: 512
+    num_convnext_blocks: 6
+    num_self_attn_blocks: 4
+    num_cross_attn_layers: 2
+    num_heads: 4
+    kernel_size: 5
+
+  vector_field:
+    hidden_dim: 512
+    num_blocks: 8
+    kernel_size: 7
+    dilations: [1, 2, 4, 8, 1, 2, 4, 8]
+    num_heads: 4
+
+# ====== DURATION PREDICTOR ======
+duration_predictor:
+  hidden_dim: 256
+  num_convnext_blocks: 4
+  kernel_size: 7
+  intermediate_mult: 4
+
+# ====== LAROPE CONFIGURATION ======
+larope:
+  gamma: 10                  # Критично для diagonal alignment
+  base: 10000
+
+# ====== FLOW MATCHING ======
+flow_matching:
+  sigma_min: 1.0e-8
+  p_uncond: 0.05             # CFG unconditional probability
+  cfg_scale: 3.0             # Classifier-free guidance scale
+  nfe: 32                    # Number of function evaluations (inference)
+
+# ====== TRAINING: AUTOENCODER ======
+train_autoencoder:
+  batch_size: 16
+  learning_rate: 2.0e-4
+  total_iterations: 1500000  # 1.5M
+  checkpoint_interval: 50000
+  validation_interval: 10000
+
+  loss_weights:
+    reconstruction: 45.0     # λ_recon
+    adversarial: 1.0         # λ_adv
+    feature_matching: 0.1    # λ_fm
+
+  optimizer:
+    type: "AdamW"
+    betas: [0.8, 0.99]
+    weight_decay: 0.01
+
+  amp:
+    enabled: true
+    dtype: "bfloat16"
+
+# ====== TRAINING: TEXT-TO-LATENT ======
+train_tts:
+  batch_size: 64
+  expansion_factor: 4        # Ke - context-sharing
+  effective_batch: 256       # batch_size × expansion_factor
+  learning_rate: 5.0e-4
+  total_iterations: 700000
+  lr_halve_interval: 300000
+  checkpoint_interval: 50000
+  validation_interval: 10000
+
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+  amp:
+    enabled: true
+    dtype: "bfloat16"
+
+# ====== TRAINING: DURATION PREDICTOR ======
+train_duration:
+  batch_size: 64
+  learning_rate: 5.0e-4
+  total_iterations: 3000
+  checkpoint_interval: 1000
+
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+# ====== LANGUAGES ======
+languages:
+  supported: ["en", "ko", "es", "pt", "fr", "uk"]
+  embedding_dim: 4           # Optional language embeddings
+
+  # Мовні датасети
+  datasets:
+    en:
+      - name: "LJSpeech"
+        hours: 24
+        speakers: 1
+      - name: "VCTK"
+        hours: 44
+        speakers: 109
+      - name: "Hi-Fi TTS"
+        hours: 300
+        speakers: 10
+      - name: "LibriTTS"
+        hours: 585
+        speakers: 2456
+    uk:
+      - name: "M-AILABS Ukrainian"
+        hours: 20
+        speakers: 2
+      - name: "Common Voice Ukrainian"
+        hours: 80
+        speakers: 1000
+
+# ====== DATA PATHS ======
+data:
+  train_manifest: "data/train_manifest.json"
+  val_manifest: "data/val_manifest.json"
+  test_manifest: "data/test_manifest.json"
+  cache_dir: "cache/"
+
+  # Audio settings
+  max_audio_duration: 30.0   # seconds
+  min_audio_duration: 0.5
+  max_text_length: 500
+
+# ====== CHECKPOINTS & LOGGING ======
+output:
+  checkpoint_dir: "checkpoints/"
+  log_dir: "logs/"
+  sample_dir: "samples/"
+
+logging:
+  backend: "wandb"           # "wandb" or "tensorboard"
+  project: "supertonic-v2-uk"
+  log_interval: 100
+  audio_log_interval: 5000
+
+# ====== DISTRIBUTED TRAINING ======
+distributed:
+  enabled: true
+  backend: "nccl"
+  find_unused_parameters: false
+
+# ====== INFERENCE ======
+inference:
+  nfe: 32
+  cfg_scale: 3.0
+  max_duration: 30.0

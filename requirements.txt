@@ -1,0 +1,61 @@
+# Supertonic v2 TTS - Python Dependencies
+# Tested with Python 3.10+, PyTorch 2.2+
+
+# Core ML
+torch>=2.2.0
+torchaudio>=2.2.0
+torchvision>=0.17.0
+
+# Audio Processing
+librosa>=0.10.1
+soundfile>=0.12.1
+scipy>=1.11.0
+numpy>=1.24.0
+resampy>=0.4.2
+
+# Model & Training
+einops>=0.7.0
+rotary-embedding-torch>=0.5.3
+flash-attn>=2.5.0  # Optional: for faster attention
+
+# Data
+pandas>=2.0.0
+datasets>=2.16.0
+webdataset>=0.2.77
+audiomentations>=0.34.0
+
+# Configuration
+omegaconf>=2.3.0
+hydra-core>=1.3.2
+pyyaml>=6.0.1
+
+# Logging & Monitoring
+wandb>=0.16.0
+tensorboard>=2.15.0
+tqdm>=4.66.0
+rich>=13.7.0
+
+# ONNX Export
+onnx>=1.15.0
+onnxruntime>=1.17.0
+onnxruntime-gpu>=1.17.0
+
+# Distributed Training
+accelerate>=0.26.0
+
+# Text Processing
+regex>=2023.12.25
+num2words>=0.5.13
+Unidecode>=1.3.8
+
+# Testing & Development
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=24.1.0
+isort>=5.13.0
+mypy>=1.8.0
+
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
+fire>=0.5.0

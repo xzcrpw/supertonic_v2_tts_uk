@@ -64,11 +64,18 @@ python inference.py \
 
 | Датасет | Годин | Спікерів | Посилання |
 |---------|-------|----------|-----------|
-| **M-AILABS Ukrainian** | ~20 | 2 | [Download](http://www.caito.de/data/Training/stt_tts/uk_UK.tgz) |
-| **OpenTTS-UK** | ~10 | 5 | [HuggingFace](https://huggingface.co/datasets/Yehor/opentts-uk) |
+| **OpenTTS LADA** | ~5 | 1 (female) | [HuggingFace](https://huggingface.co/datasets/speech-uk/opentts-lada) ✅ |
+| **OpenTTS TETIANA** | ~5 | 1 (female) | [HuggingFace](https://huggingface.co/datasets/speech-uk/opentts-tetiana) ✅ |
+| **OpenTTS KATERYNA** | ~5 | 1 (female) | [HuggingFace](https://huggingface.co/datasets/speech-uk/opentts-kateryna) ✅ |
+| **OpenTTS MYKYTA** | ~5 | 1 (male) | [HuggingFace](https://huggingface.co/datasets/speech-uk/opentts-mykyta) ✅ |
+| **OpenTTS OLEKSA** | ~5 | 1 (male) | [HuggingFace](https://huggingface.co/datasets/speech-uk/opentts-oleksa) ✅ |
+| **Ukrainian Podcasts** | ~100+ | Many | [HuggingFace](https://huggingface.co/datasets/taras-sereda/uk-pods) ✅ |
 | **Common Voice UK** | ~80 | 1000+ | [Mozilla](https://commonvoice.mozilla.org/uk/datasets) |
-| **Voice of America** | ~390 | Many | [HuggingFace](https://huggingface.co/datasets/speech-uk/voice-of-america) |
-| **Broadcast Speech** | ~300 | Many | [HuggingFace](https://huggingface.co/datasets/Yehor/broadcast-speech-uk) |
+| **Voice of America** | ~390 | Many | [HuggingFace](https://huggingface.co/datasets/speech-uk/voice-of-america) ✅ |
+| **Broadcast Speech** | ~300 | Many | [HuggingFace](https://huggingface.co/datasets/Yehor/broadcast-speech-uk) ✅ |
+| **Compiled Dataset** | ~1200 | Many | [NextCloud](https://nx16725.your-storageshare.de/s/cAbcBeXtdz7znDN) / [Torrent](https://academictorrents.com/details/fcf8bb60c59e9eb583df003d54ed61776650beb8) |
+
+> ⚠️ **M-AILABS** (caito.de) наразі **недоступний**. Використовуйте OpenTTS voices замість нього.
 
 ### Англійська (для pretrain)
 
@@ -89,24 +96,34 @@ python scripts/download_datasets.py --full
 
 ## 🖥️ Vast.ai Configuration
 
+### 🏆 Рекомендовані GPU (ціна/швидкість)
+
+| GPU | Ціна/год | Час | Вартість | Рекомендація |
+|-----|----------|-----|----------|--------------|
+| **A100 40GB (Italy)** | $0.152 | ~7 днів | **~$26** | 💰 Найдешевше |
+| 2× A100 40GB (Italy) | $0.299 | ~4 дні | ~$29 | Швидко + дешево |
+| **H100 SXM (India)** | $0.746 | ~2-3 дні | **~$35-45** | 🚀 Найшвидше |
+| RTX 4090 (Portugal) | $0.155 | ~14 днів | ~$52 | Backup |
+| RTX PRO 6000 Blackwell | $0.413 | ~5-6 днів | ~$55 | 96GB VRAM |
+
+### 🚀 H100 SXM - Найшвидший варіант
+
+```bash
+# Конфігурація для H100 80GB
+./scripts/train_h100.sh
+# або
+python train_autoencoder.py --config config/h100_optimized.yaml
+```
+
+**Переваги H100:**
+- Transformer Engine (FP8) — 2× speedup
+- 3,350 GB/s memory bandwidth
+- 80GB VRAM → batch_size=48-128
+
 ### Рекомендований Template
 
 - **PyTorch (Vast)** з Jupyter
 - CUDA 12.x
-
-### Рекомендований Instance
-
-| GPU | Ціна/год | Storage | Час тренування |
-|-----|---------|---------|----------------|
-| 1× RTX 5090 | $0.19-0.22 | 200 GB | ~12-14 днів |
-| 2× RTX 5090 | $0.35-0.45 | 200 GB | ~6-7 днів |
-
-**Загальна вартість**: ~$55-70
-
-### Найкращі варіанти (станом на 2026):
-
-- `host:96199` (Washington) - **$0.188/hr** - найдешевший
-- `host:155385` (CN) - $0.213/hr - verified 5 months
 
 ## 📁 Структура проекту
 

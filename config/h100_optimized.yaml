@@ -1,0 +1,215 @@
+# =============================================================================
+# Supertonic v2 TTS - H100 SXM Optimized Configuration
+# =============================================================================
+# Оптимізовано для H100 80GB з максимальним використанням:
+# - FP8 Transformer Engine
+# - Великі batch sizes
+# - Часті checkpoints (для надійності)
+# =============================================================================
+
+# ====== AUDIO CONFIGURATION ======
+audio:
+  sample_rate: 44100
+  n_fft: 2048
+  hop_length: 512
+  win_length: 2048
+  n_mels: 228
+  fmin: 0
+  fmax: 22050
+
+# ====== LATENT SPACE ======
+latent:
+  dim: 24
+  temporal_compression: 6
+  compressed_dim: 144
+
+# ====== SPEECH AUTOENCODER ======
+autoencoder:
+  encoder:
+    input_dim: 228
+    hidden_dim: 512
+    output_dim: 24
+    num_blocks: 10
+    kernel_size: 7
+    intermediate_mult: 4
+
+  decoder:
+    input_dim: 24
+    hidden_dim: 512
+    num_blocks: 10
+    kernel_size: 7
+    intermediate_mult: 4
+    dilations: [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
+    causal: true
+
+  discriminator:
+    mpd_periods: [2, 3, 5, 7, 11]
+    mrd_fft_sizes: [512, 1024, 2048]
+
+# ====== TEXT-TO-LATENT MODULE ======
+text_to_latent:
+  reference_encoder:
+    input_dim: 144
+    hidden_dim: 128
+    num_convnext_blocks: 6
+    num_cross_attn_layers: 2
+    num_output_vectors: 50
+    kernel_size: 5
+    intermediate_mult: 4
+
+  text_encoder:
+    vocab_size: 512
+    embed_dim: 128
+    hidden_dim: 512
+    num_convnext_blocks: 6
+    num_self_attn_blocks: 4
+    num_cross_attn_layers: 2
+    num_heads: 4
+    kernel_size: 5
+
+  vector_field:
+    hidden_dim: 512
+    num_blocks: 8
+    kernel_size: 7
+    dilations: [1, 2, 4, 8, 1, 2, 4, 8]
+    num_heads: 4
+
+# ====== DURATION PREDICTOR ======
+duration_predictor:
+  hidden_dim: 256
+  num_convnext_blocks: 4
+  kernel_size: 7
+  intermediate_mult: 4
+
+# ====== LAROPE ======
+larope:
+  gamma: 10
+  base: 10000
+
+# ====== FLOW MATCHING ======
+flow_matching:
+  sigma_min: 1.0e-8
+  p_uncond: 0.05
+  cfg_scale: 3.0
+  nfe: 32
+
+# =============================================================================
+# H100 OPTIMIZED TRAINING SETTINGS
+# =============================================================================
+
+# ====== TRAINING: AUTOENCODER ======
+# H100 80GB → batch_size=48-64 замість 16!
+train_autoencoder:
+  batch_size: 48                 # ⬆️ Було 16
+  learning_rate: 2.0e-4
+  total_iterations: 1500000
+  checkpoint_interval: 10000     # ⬆️ Частіше (кожні ~2-3 год)
+  validation_interval: 5000
+  
+  # Gradient accumulation якщо batch не влазить
+  gradient_accumulation_steps: 1
+
+  loss_weights:
+    reconstruction: 45.0
+    adversarial: 1.0
+    feature_matching: 0.1
+
+  optimizer:
+    type: "AdamW"
+    betas: [0.8, 0.99]
+    weight_decay: 0.01
+
+  amp:
+    enabled: true
+    dtype: "bfloat16"            # H100 чудово з bf16
+    # Можна спробувати FP8 для ще більшого speedup:
+    # dtype: "float8_e4m3fn"     # Експериментально
+
+# ====== TRAINING: TEXT-TO-LATENT ======
+# H100 80GB → batch_size=128 × 4 = 512 effective!
+train_tts:
+  batch_size: 128                # ⬆️ Було 64
+  expansion_factor: 4
+  effective_batch: 512           # ⬆️ Було 256
+  learning_rate: 5.0e-4
+  total_iterations: 700000
+  lr_halve_interval: 300000
+  checkpoint_interval: 10000     # Кожні ~2-3 год
+  validation_interval: 5000
+
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+  amp:
+    enabled: true
+    dtype: "bfloat16"
+
+# ====== TRAINING: DURATION PREDICTOR ======
+train_duration:
+  batch_size: 256                # ⬆️ Було 64
+  learning_rate: 5.0e-4
+  total_iterations: 3000
+  checkpoint_interval: 500
+
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+# ====== LANGUAGES ======
+languages:
+  supported: ["en", "ko", "es", "pt", "fr", "uk"]
+  embedding_dim: 4
+
+# ====== DATA PATHS ======
+data:
+  train_manifest: "data/manifests/train_manifest.json"
+  val_manifest: "data/manifests/val_manifest.json"
+  test_manifest: "data/manifests/test_manifest.json"
+  cache_dir: "cache/"
+  max_audio_duration: 30.0
+  min_audio_duration: 0.5
+  max_text_length: 500
+
+# ====== H100 SPECIFIC OPTIMIZATIONS ======
+h100_optimizations:
+  # torch.compile для додаткового speedup
+  use_torch_compile: true
+  compile_mode: "reduce-overhead"  # або "max-autotune"
+  
+  # CUDA optimizations
+  cudnn_benchmark: true
+  allow_tf32: true
+  
+  # Memory optimizations
+  gradient_checkpointing: false   # Не потрібно з 80GB
+  empty_cache_freq: 1000          # Очищати CUDA cache
+
+# ====== CHECKPOINTS & LOGGING ======
+output:
+  checkpoint_dir: "checkpoints/"
+  log_dir: "logs/"
+  sample_dir: "samples/"
+  
+  # Зберігати останні N checkpoints (економія місця)
+  keep_last_n_checkpoints: 5
+
+logging:
+  backend: "wandb"
+  project: "supertonic-v2-uk-h100"
+  log_interval: 50                # Частіше логування
+  audio_log_interval: 2500
+
+# ====== DISTRIBUTED TRAINING ======
+distributed:
+  enabled: false                  # 1x H100 достатньо
+  backend: "nccl"
+  find_unused_parameters: false
+
+# ====== INFERENCE ======
+inference:
+  nfe: 32
+  cfg_scale: 3.0
+  max_duration: 30.0

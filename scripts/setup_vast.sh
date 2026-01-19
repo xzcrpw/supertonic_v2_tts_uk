@@ -101,36 +101,53 @@ if [ "$SKIP_DATASETS" = false ]; then
     # -------------------------------------------------------------------------
     # M-AILABS Ukrainian (~20 hours, ~3GB)
     # -------------------------------------------------------------------------
-    echo -e "${YELLOW}Downloading M-AILABS Ukrainian...${NC}"
-    if [ ! -d "uk_UK" ]; then
-        wget -c http://www.caito.de/data/Training/stt_tts/uk_UK.tgz -O uk_UK.tgz
-        echo "Extracting M-AILABS..."
-        tar -xzf uk_UK.tgz
-        rm uk_UK.tgz
-        echo -e "${GREEN}✓ M-AILABS Ukrainian downloaded${NC}"
-    else
-        echo "M-AILABS already exists, skipping..."
-    fi
+    echo -e "${YELLOW}NOTE: M-AILABS (caito.de) is currently UNAVAILABLE${NC}"
+    echo -e "${YELLOW}Using OpenTTS voices instead (higher quality anyway!)${NC}"
     
     # -------------------------------------------------------------------------
-    # OpenTTS-UK from HuggingFace (~multiple voices)
+    # OpenTTS Individual Voices (RECOMMENDED - always available)
     # -------------------------------------------------------------------------
-    echo -e "${YELLOW}Downloading OpenTTS-UK...${NC}"
-    if [ ! -d "opentts-uk" ]; then
-        pip install -q huggingface_hub
+    echo -e "${YELLOW}Downloading OpenTTS Ukrainian Voices...${NC}"
+    
+    pip install -q huggingface_hub
+    
+    # Download each voice
+    for voice in lada tetiana kateryna mykyta oleksa; do
+        if [ ! -d "$voice" ]; then
+            echo "Downloading voice: $voice..."
+            python -c "
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id='speech-uk/opentts-$voice',
+    repo_type='dataset',
+    local_dir='$voice',
+    ignore_patterns=['*.md', '.git*']
+)
+print('✓ $voice downloaded')
+" || echo "Failed to download $voice"
+        else
+            echo "$voice already exists, skipping..."
+        fi
+    done
+    echo -e "${GREEN}✓ OpenTTS voices downloaded${NC}"
+    
+    # -------------------------------------------------------------------------
+    # Ukrainian Podcasts (high quality, ~100+ hours)
+    # -------------------------------------------------------------------------
+    echo -e "${YELLOW}Downloading Ukrainian Podcasts...${NC}"
+    if [ ! -d "uk-pods" ]; then
         python -c "
 from huggingface_hub import snapshot_download
 snapshot_download(
-    repo_id='Yehor/opentts-uk',
+    repo_id='taras-sereda/uk-pods',
     repo_type='dataset',
-    local_dir='opentts-uk',
-    ignore_patterns=['*.md', '*.txt']
+    local_dir='uk-pods'
 )
-print('OpenTTS-UK downloaded')
+print('Ukrainian Podcasts downloaded')
 "
-        echo -e "${GREEN}✓ OpenTTS-UK downloaded${NC}"
+        echo -e "${GREEN}✓ Ukrainian Podcasts downloaded${NC}"
     else
-        echo "OpenTTS-UK already exists, skipping..."
+        echo "Ukrainian Podcasts already exists, skipping..."
     fi
     
     # -------------------------------------------------------------------------

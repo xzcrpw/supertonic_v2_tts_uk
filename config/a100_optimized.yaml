@@ -1,0 +1,122 @@
+# Supertonic v2 TTS - A100 PCIE 80GB Optimized Configuration
+# Оптимізовано для: 1x NVIDIA A100 PCIE 80GB, 64GB RAM
+# Estimated training time: ~3-4 days
+
+# Audio settings (same as default)
+audio:
+  sample_rate: 44100
+  n_fft: 2048
+  hop_length: 512
+  win_length: 2048
+  n_mels: 228
+  mel_fmin: 20.0
+  mel_fmax: 20000.0
+
+# Model architecture
+model:
+  # Speech Autoencoder
+  autoencoder:
+    in_channels: 228  # n_mels
+    latent_dim: 32
+    hidden_dims: [64, 128, 256, 512]
+    num_convnext_blocks: 4
+    kernel_size: 7
+    
+  # Text-to-Latent (Flow Matching)
+  text_to_latent:
+    text_dim: 256
+    latent_dim: 32
+    hidden_dim: 512
+    num_layers: 8
+    num_heads: 8
+    dropout: 0.1
+    max_text_len: 512
+    max_latent_len: 2048
+    
+  # Duration Predictor
+  duration_predictor:
+    text_dim: 256
+    hidden_dim: 256
+    num_layers: 4
+    kernel_size: 3
+    dropout: 0.1
+
+# Training settings - A100 80GB optimized
+training:
+  # Stage 1: Autoencoder
+  autoencoder:
+    batch_size: 32          # A100 80GB can handle 32
+    learning_rate: 1.0e-4
+    num_epochs: 500
+    warmup_steps: 5000
+    gradient_clip: 1.0
+    checkpoint_interval: 5000
+    log_interval: 100
+    num_workers: 8          # Good for 64GB RAM
+    pin_memory: true
+    
+  # Stage 2: Text-to-Latent  
+  text_to_latent:
+    batch_size: 64          # A100 can handle 64
+    learning_rate: 1.0e-4
+    num_steps: 1000000
+    warmup_steps: 10000
+    gradient_clip: 1.0
+    checkpoint_interval: 10000
+    log_interval: 100
+    num_workers: 8
+    pin_memory: true
+    # Flow matching
+    sigma_min: 1.0e-8
+    
+  # Stage 3: Duration Predictor
+  duration_predictor:
+    batch_size: 128         # Small model, big batch
+    learning_rate: 1.0e-4
+    num_epochs: 100
+    warmup_steps: 1000
+    gradient_clip: 1.0
+    checkpoint_interval: 2000
+    log_interval: 50
+    num_workers: 8
+    pin_memory: true
+
+# Loss weights
+loss:
+  autoencoder:
+    reconstruction: 1.0
+    kl: 0.01
+    perceptual: 0.1
+    
+  text_to_latent:
+    flow_matching: 1.0
+    
+  duration_predictor:
+    mse: 1.0
+
+# Inference settings
+inference:
+  # ODE solver
+  num_steps: 32
+  solver: "euler"
+  cfg_scale: 3.0
+
+# Optimization - A100 specific
+optimization:
+  use_amp: true             # Mixed precision (bfloat16)
+  amp_dtype: "bfloat16"     # A100 supports bfloat16
+  gradient_checkpointing: false  # 80GB VRAM is enough
+  compile_model: true       # torch.compile for speed
+  
+# Hardware
+hardware:
+  device: "cuda"
+  num_gpus: 1
+  
+# Paths
+paths:
+  data_dir: "data/processed"
+  manifest_train: "data/manifests/train.json"
+  manifest_val: "data/manifests/val.json"
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"

@@ -46,7 +46,7 @@ training:
   
   # Stage 1: Autoencoder
   autoencoder:
-    batch_size: 32          # OPTIMAL: 33% faster, no OOM!
+    batch_size: 28          # Sweet spot: ~1.35s/it, no memory pressure
     learning_rate: 1.0e-4
     num_epochs: 500
     warmup_steps: 5000
@@ -138,7 +138,7 @@ data:
 
 # Autoencoder training specific settings
 train_autoencoder:
-  batch_size: 32               # OPTIMAL: sweet spot для 96GB
+  batch_size: 28               # Sweet spot: faster than 24, no memory pressure
   gradient_accumulation_steps: 1
   learning_rate: 0.0001
   total_iterations: 1000000

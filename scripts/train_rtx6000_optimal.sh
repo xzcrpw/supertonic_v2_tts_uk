@@ -7,12 +7,12 @@ set -e
 
 echo "⚡ RTX PRO 6000 OPTIMAL MODE - Training Speech Autoencoder"
 echo "==============================================="
-echo "Batch size: 32 (optimal for 96GB)"
+echo "Batch size: 28 (sweet spot, no memory pressure)"
 echo "Workers: 8"
 echo "Validation: every 2000 steps"
-echo "Expected: ~1.2s/it"
-echo "VRAM usage: ~75-80GB (safe margin)"
-echo "Speed gain: ~33% faster!"
+echo "Expected: ~1.35s/it"
+echo "VRAM usage: ~70GB (safe)"
+echo "Speed gain: ~15% faster than baseline!"
 echo "==============================================="
 
 # CUDA optimization

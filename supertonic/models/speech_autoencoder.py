@@ -196,14 +196,6 @@ class LatentEncoder(nn.Module):
         output_dim: int = 24,
         num_blocks: int = 10,
         kernel_size: int = 7,
-        intermediate_mult: int = 4
-    def __init__(
-        self,
-        input_dim: int = 228,
-        hidden_dim: int = 512,
-        output_dim: int = 24,
-        num_blocks: int = 10,
-        kernel_size: int = 7,
         intermediate_mult: int = 4,
         gradient_checkpointing: bool = False
     ):

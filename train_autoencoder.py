@@ -355,12 +355,15 @@ def main(args):
         train_sampler = None
         shuffle = True
     
+    # Get num_workers from config (default 4 for compatibility)
+    num_workers = config.training.autoencoder.get("num_workers", 4)
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.train_autoencoder.batch_size,
         shuffle=shuffle,
         sampler=train_sampler,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
         collate_fn=autoencoder_collate_fn,
         drop_last=True
@@ -370,7 +373,7 @@ def main(args):
         val_dataset,
         batch_size=config.train_autoencoder.batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
         collate_fn=autoencoder_collate_fn
     )

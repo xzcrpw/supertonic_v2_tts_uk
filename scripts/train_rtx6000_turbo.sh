@@ -20,6 +20,6 @@ export CUDA_LAUNCH_BLOCKING=0
 # Training
 python train_autoencoder.py \
     --config config/rtx6000_turbo.yaml \
-    --resume checkpoints/autoencoder_010000.pt
+    --resume checkpoints/autoencoder/checkpoint_10000.pt
 
 echo "✅ Training complete!"

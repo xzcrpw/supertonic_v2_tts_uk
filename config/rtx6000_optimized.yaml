@@ -1,0 +1,176 @@
+# Supertonic v2 TTS - RTX PRO 6000 Blackwell 96GB Optimized Configuration
+# Оптимізовано для: 1x RTX PRO 6000 96GB VRAM, 128GB RAM
+# Estimated training time: ~2-3 days (faster than A100!)
+
+# Audio settings
+audio:
+  sample_rate: 44100
+  n_fft: 2048
+  hop_length: 512
+  win_length: 2048
+  n_mels: 228
+  mel_fmin: 20.0
+  mel_fmax: 20000.0
+
+# Model architecture
+model:
+  autoencoder:
+    in_channels: 228
+    latent_dim: 32
+    hidden_dims: [64, 128, 256, 512]
+    num_convnext_blocks: 4
+    kernel_size: 7
+    
+  text_to_latent:
+    text_dim: 256
+    latent_dim: 32
+    hidden_dim: 512
+    num_layers: 8
+    num_heads: 8
+    dropout: 0.1
+    max_text_len: 512
+    max_latent_len: 2048
+    
+  duration_predictor:
+    text_dim: 256
+    hidden_dim: 256
+    num_layers: 4
+    kernel_size: 3
+    dropout: 0.1
+
+# Training settings - RTX PRO 6000 96GB optimized (AGGRESSIVE!)
+training:
+  # With 96GB VRAM we can use longer segments!
+  segment_length: 264600    # 6 seconds at 44.1kHz
+  
+  # Stage 1: Autoencoder
+  autoencoder:
+    batch_size: 24          # 96GB can handle this easily!
+    learning_rate: 1.0e-4
+    num_epochs: 500
+    warmup_steps: 5000
+    gradient_clip: 1.0
+    checkpoint_interval: 5000
+    log_interval: 100
+    num_workers: 12         # 128GB RAM allows more workers
+    pin_memory: true
+    
+  # Stage 2: Text-to-Latent  
+  text_to_latent:
+    batch_size: 96          # Big batch for flow matching
+    learning_rate: 1.0e-4
+    num_steps: 1000000
+    warmup_steps: 10000
+    gradient_clip: 1.0
+    checkpoint_interval: 10000
+    log_interval: 100
+    num_workers: 12
+    pin_memory: true
+    sigma_min: 1.0e-8
+    
+  # Stage 3: Duration Predictor
+  duration_predictor:
+    batch_size: 256         # Small model, huge batch
+    learning_rate: 1.0e-4
+    num_epochs: 100
+    warmup_steps: 1000
+    gradient_clip: 1.0
+    checkpoint_interval: 2000
+    log_interval: 50
+    num_workers: 12
+    pin_memory: true
+
+# Loss weights
+loss:
+  autoencoder:
+    reconstruction: 1.0
+    kl: 0.01
+    perceptual: 0.1
+  text_to_latent:
+    flow_matching: 1.0
+  duration_predictor:
+    mse: 1.0
+
+# Inference settings
+inference:
+  num_steps: 32
+  solver: "euler"
+  cfg_scale: 3.0
+
+# Optimization - RTX PRO 6000 specific
+optimization:
+  use_amp: true             # Mixed precision
+  amp_dtype: "bfloat16"     # Blackwell supports bfloat16
+  gradient_checkpointing: false  # 96GB VRAM - не потрібно!
+  compile_model: true       # torch.compile for speed
+  
+# Hardware
+hardware:
+  device: "cuda"
+  num_gpus: 1
+  
+# Paths
+paths:
+  data_dir: "data/processed"
+  manifest_train: "data/manifests/train.json"
+  manifest_val: "data/manifests/val.json"
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+
+# Logging
+logging:
+  project: "supertonic-v2-uk"
+  log_interval: 50
+
+# Output directories
+output:
+  checkpoint_dir: "checkpoints"
+  sample_dir: "samples"
+
+# Data paths and constraints
+data:
+  train_manifest: "data/manifests/train.json"
+  val_manifest: "data/manifests/val.json"
+  min_audio_duration: 0.5
+  max_audio_duration: 15.0   # Can handle longer with 96GB!
+  max_text_length: 500
+
+# Autoencoder training specific settings
+train_autoencoder:
+  batch_size: 24           # Aggressive batch for 96GB
+  gradient_accumulation_steps: 1  # No need with big batch
+  learning_rate: 0.0001
+  total_iterations: 1000000
+  checkpoint_interval: 5000
+  validation_interval: 1000
+  amp:
+    enabled: true
+  optimizer:
+    betas: [0.8, 0.99]
+    weight_decay: 0.01
+  loss_weights:
+    reconstruction: 45.0
+    adversarial: 1.0
+    feature_matching: 0.1
+  discriminator:
+    mpd_periods: [2, 3, 5, 7, 11]
+    mrd_fft_sizes: [512, 1024, 2048]
+
+# Model Architecture Configuration
+autoencoder:
+  encoder:
+    input_dim: 228
+    hidden_dim: 512
+    output_dim: 24
+    num_blocks: 10
+    kernel_size: 7
+  decoder:
+    input_dim: 24
+    hidden_dim: 512
+    num_blocks: 10
+    kernel_size: 7
+    dilations: [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
+    causal: true
+  discriminator:
+    mpd_periods: [2, 3, 5, 7, 11]
+    mrd_fft_sizes: [512, 1024, 2048]

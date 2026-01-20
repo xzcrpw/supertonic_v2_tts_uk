@@ -1,7 +1,7 @@
 # Supertonic v2 TTS - RTX PRO 6000 OPTIMAL Configuration
 # Оптимізовано для максимальної швидкості БЕЗ OOM
-# batch_size=32 - sweet spot для 96GB VRAM
-# Estimated: ~1.2s/it (33% faster than baseline 24)
+# batch_size=28 - sweet spot для 96GB VRAM
+# Estimated: ~1.35s/it (15% faster than baseline 24)
 
 # Audio settings
 audio:

@@ -131,6 +131,10 @@ class MultiResolutionSTFT(nn.Module):
             mel_fb = getattr(self, f"mel_fb_{i}")
             window = getattr(self, f"window_{i}")
             
+            # Ensure window is on same device as audio
+            if window.device != audio.device:
+                window = window.to(audio.device)
+            
             # STFT
             spec = torch.stft(
                 audio,
@@ -147,6 +151,10 @@ class MultiResolutionSTFT(nn.Module):
             
             # Magnitude
             mag = spec.abs()  # [B, n_freqs, T]
+            
+            # Ensure mel_fb is on same device as mag
+            if mel_fb.device != mag.device:
+                mel_fb = mel_fb.to(mag.device)
             
             # Mel
             mel = torch.matmul(mel_fb, mag)

@@ -1,394 +1,215 @@
 #!/usr/bin/env python3
 """
-Manifest Preparation Script для Supertonic v2 TTS
-
-Створює JSON manifests з різних датасетів:
-- M-AILABS Ukrainian
-- OpenTTS-UK (Yehor/opentts-uk)
-- Common Voice Ukrainian
-- Voice of America
-- Ukrainian Broadcast
-- LJSpeech (English)
-
-Output format:
-[
-    {
-        "audio_path": "path/to/audio.wav",
-        "text": "Транскрипція тексту",
-        "language": "uk",
-        "speaker_id": "speaker_name",
-        "duration": 5.2
-    },
-    ...
-]
-
-Usage:
-    python scripts/prepare_manifest.py --data-dir data/raw --output-dir data/manifests
+Manifest Preparation - DATA DRIVEN FIX (Jan 2026)
+Correct column names based on inspection:
+- OpenTTS: 'transcription'
+- EuroSpeech: 'human_transcript'
+- Podcasts: 'audio_filepath'
 """
-
 import os
 import sys
 import json
 import argparse
 import random
+import io
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import List, Dict
 from tqdm import tqdm
-
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import soundfile as sf
+import pandas as pd
 
 try:
     import torchaudio
-    TORCHAUDIO_AVAILABLE = True
 except ImportError:
-    TORCHAUDIO_AVAILABLE = False
-    import wave
-    import contextlib
+    pass
 
-try:
-    from datasets import load_dataset
-    HF_DATASETS_AVAILABLE = True
-except ImportError:
-    HF_DATASETS_AVAILABLE = False
-
-
-def get_audio_duration(audio_path: str) -> float:
-    """Get duration of audio file in seconds."""
+def get_audio_duration(file_path: str) -> float:
     try:
-        if TORCHAUDIO_AVAILABLE:
-            info = torchaudio.info(audio_path)
-            return info.num_frames / info.sample_rate
-        else:
-            with contextlib.closing(wave.open(audio_path, 'r')) as f:
-                frames = f.getnframes()
-                rate = f.getframerate()
-                return frames / float(rate)
-    except Exception as e:
-        print(f"Error reading {audio_path}: {e}")
+        f = sf.SoundFile(file_path)
+        return len(f) / f.samplerate
+    except Exception:
         return 0.0
 
-
-def process_mailabs_ukrainian(data_dir: Path) -> List[Dict]:
-    """
-    Process M-AILABS Ukrainian dataset.
-    
-    Structure:
-    uk_UK/
-    ├── by_book/
-    │   ├── female/
-    │   │   └── sumska/
-    │   │       └── svit_u_sto_rokiv/
-    │   │           ├── wavs/
-    │   │           └── metadata.csv
-    │   └── male/
-    │       └── shepel/
-    │           └── kobzar/
-    │               ├── wavs/
-    │               └── metadata.csv
-    """
+def process_opentts(data_dir: Path) -> List[Dict]:
+    """Extracts OpenTTS using column 'transcription'."""
     samples = []
-    mailabs_dir = data_dir / "ukrainian" / "uk_UK"
+    base_dir = data_dir / "opentts"
+    if not base_dir.exists(): return samples
+
+    print("🔍 Processing OpenTTS...")
     
-    if not mailabs_dir.exists():
-        print(f"M-AILABS not found at {mailabs_dir}")
-        return samples
+    # Рекурсивний пошук parquet
+    parquet_files = list(base_dir.rglob("*.parquet"))
     
-    print("Processing M-AILABS Ukrainian...")
-    
-    # Find all metadata files
-    for metadata_path in mailabs_dir.rglob("metadata.csv"):
-        wavs_dir = metadata_path.parent / "wavs"
+    for p_file in parquet_files:
+        # Визначаємо ім'я голосу з папки (opentts/lada/...)
+        parts = p_file.parts
+        try:
+            # Шукаємо де 'opentts' і беремо наступну папку
+            idx = parts.index('opentts')
+            voice_name = parts[idx+1]
+        except:
+            voice_name = "unknown"
+
+        wav_out = p_file.parent.parent / "extracted_wavs" # opentts/lada/extracted_wavs
+        wav_out.mkdir(parents=True, exist_ok=True)
         
-        # Determine speaker from path
-        parts = metadata_path.parts
-        speaker_id = None
-        for i, part in enumerate(parts):
-            if part in ["female", "male"]:
-                if i + 1 < len(parts):
-                    speaker_id = f"mailabs_{parts[i+1]}"
-                break
-        
-        if speaker_id is None:
-            speaker_id = "mailabs_unknown"
-        
-        # Read metadata
-        with open(metadata_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
+        try:
+            df = pd.read_parquet(p_file)
+            print(f"   👤 Voice: {voice_name} | File: {p_file.name} | Rows: {len(df)}")
+
+            for idx, row in tqdm(df.iterrows(), total=len(df), desc=f"   Extr. {voice_name}", leave=False):
+                # !!! FIX: Correct column name
+                text = row.get('transcription', '')
+                if not text: continue
                 
-                parts = line.split('|')
-                if len(parts) >= 2:
-                    file_id = parts[0]
-                    text = parts[1] if len(parts) == 2 else parts[2]
-                    
-                    audio_path = wavs_dir / f"{file_id}.wav"
-                    if audio_path.exists():
-                        duration = get_audio_duration(str(audio_path))
-                        
-                        if 0.5 < duration < 30:  # Filter by duration
-                            samples.append({
-                                "audio_path": str(audio_path),
-                                "text": text.strip(),
-                                "language": "uk",
-                                "speaker_id": speaker_id,
-                                "duration": duration
-                            })
-    
-    print(f"  Found {len(samples)} samples from M-AILABS")
+                audio_data = row.get('audio', {})
+                if not isinstance(audio_data, dict): continue
+                audio_bytes = audio_data.get('bytes')
+                if not audio_bytes: continue
+                
+                wav_path = wav_out / f"{voice_name}_{idx}.wav"
+                
+                # Save WAV
+                if not wav_path.exists():
+                    try:
+                        data, sr = sf.read(io.BytesIO(audio_bytes))
+                        sf.write(str(wav_path), data, sr)
+                    except: continue
+                
+                if wav_path.exists():
+                    dur = get_audio_duration(str(wav_path))
+                    if 0.5 < dur < 30:
+                        samples.append({
+                            "audio_path": str(wav_path),
+                            "text": text,
+                            "language": "uk",
+                            "speaker_id": voice_name,
+                            "duration": dur
+                        })
+        except Exception as e:
+            print(f"   ❌ Error {p_file.name}: {e}")
+            
+    print(f"   ✅ OpenTTS total: {len(samples)}")
     return samples
 
-
-def process_opentts_uk(data_dir: Path) -> List[Dict]:
-    """
-    Process OpenTTS-UK dataset from HuggingFace.
-    
-    Voices: LADA, TETIANA, KATERYNA (female), MYKYTA, OLEKSA (male)
-    """
+def process_eurospeech(data_dir: Path, max_hours: int = 300) -> List[Dict]:
+    """Extracts EuroSpeech using column 'human_transcript'."""
     samples = []
-    opentts_dir = data_dir / "ukrainian" / "opentts-uk"
+    base_dir = data_dir / "eurospeech-uk"
+    if not base_dir.exists(): return samples
+
+    print("🔍 Processing EuroSpeech...")
+    parquet_files = list(base_dir.rglob("*.parquet"))
+    parquet_files.sort()
     
-    if not opentts_dir.exists():
-        print(f"OpenTTS-UK not found at {opentts_dir}")
-        return samples
+    wav_out = base_dir / "extracted_wavs"
+    wav_out.mkdir(parents=True, exist_ok=True)
     
-    print("Processing OpenTTS-UK...")
+    total_dur = 0
+    limit_sec = max_hours * 3600
+    global_idx = 0
     
-    # Process each voice
-    for voice_dir in opentts_dir.iterdir():
-        if not voice_dir.is_dir():
-            continue
-        
-        speaker_id = f"opentts_{voice_dir.name.lower()}"
-        
-        # Look for metadata/transcripts
-        metadata_files = list(voice_dir.glob("*.txt")) + list(voice_dir.glob("*.csv"))
-        
-        for metadata_file in metadata_files:
-            with open(metadata_file, 'r', encoding='utf-8') as f:
+    for p_file in tqdm(parquet_files, desc="Extracting EuroSpeech"):
+        try:
+            df = pd.read_parquet(p_file)
+            
+            for _, row in df.iterrows():
+                # !!! FIX: Correct column name
+                text = row.get('human_transcript', '')
+                if not text: continue
+                
+                audio_data = row.get('audio')
+                if not audio_data or not isinstance(audio_data, dict): continue
+                audio_bytes = audio_data.get('bytes')
+                if not audio_bytes: continue
+                
+                # Use key or global index for filename
+                key = row.get('key', f'es_{global_idx}')
+                wav_path = wav_out / f"{key}.wav"
+                global_idx += 1
+                
+                if not wav_path.exists():
+                    try:
+                        data, sr = sf.read(io.BytesIO(audio_bytes))
+                        sf.write(str(wav_path), data, sr)
+                    except: continue
+                    
+                if wav_path.exists():
+                    dur = get_audio_duration(str(wav_path))
+                    if 0.5 < dur < 30:
+                        samples.append({
+                            "audio_path": str(wav_path),
+                            "text": text,
+                            "language": "uk",
+                            "speaker_id": "euro_mp",
+                            "duration": dur
+                        })
+                        total_dur += dur
+                
+                if total_dur > limit_sec: break
+            if total_dur > limit_sec: break
+        except Exception as e:
+            print(f"Error {p_file.name}: {e}")
+
+    print(f"   ✅ EuroSpeech samples: {len(samples)} ({total_dur/3600:.1f} hours)")
+    return samples
+
+def process_podcasts(data_dir: Path) -> List[Dict]:
+    """Process Podcasts using 'audio_filepath'."""
+    samples = []
+    base_dir = data_dir / "uk-pods"
+    if not base_dir.exists(): return samples
+    
+    print("🔍 Processing Podcasts...")
+    clips_dir = base_dir / "clips"
+    json_files = list(base_dir.glob("*.json"))
+    
+    for jf in json_files:
+        count = 0
+        try:
+            with open(jf, 'r', encoding='utf-8') as f:
                 for line in f:
                     line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-                    
-                    parts = line.split('|')
-                    if len(parts) >= 2:
-                        file_id = parts[0].strip()
-                        text = parts[-1].strip()
+                    if not line: continue
+                    try:
+                        item = json.loads(line)
+                        # !!! FIX: Correct column name
+                        rel_path = item.get('audio_filepath')
+                        text = item.get('text') # text is correct here
                         
-                        # Find audio file
-                        for ext in ['.wav', '.mp3', '.flac']:
-                            audio_path = voice_dir / f"{file_id}{ext}"
-                            if audio_path.exists():
-                                duration = get_audio_duration(str(audio_path))
-                                
-                                if 0.5 < duration < 30:
-                                    samples.append({
-                                        "audio_path": str(audio_path),
-                                        "text": text,
-                                        "language": "uk",
-                                        "speaker_id": speaker_id,
-                                        "duration": duration
-                                    })
-                                break
-    
-    print(f"  Found {len(samples)} samples from OpenTTS-UK")
-    return samples
-
-
-def process_common_voice(data_dir: Path, language: str = "uk") -> List[Dict]:
-    """
-    Process Common Voice dataset.
-    
-    Expected structure:
-    common_voice_uk/
-    ├── clips/
-    ├── train.tsv
-    ├── dev.tsv
-    └── test.tsv
-    """
-    samples = []
-    cv_dir = data_dir / "ukrainian" / "common_voice_uk"
-    
-    if not cv_dir.exists():
-        print(f"Common Voice not found at {cv_dir}")
-        return samples
-    
-    print("Processing Common Voice Ukrainian...")
-    
-    clips_dir = cv_dir / "clips"
-    
-    for tsv_file in ["train.tsv", "validated.tsv"]:
-        tsv_path = cv_dir / tsv_file
+                        if not rel_path or not text: continue
+                        
+                        # rel_path is like "clips/filename.wav", but clips_dir is already "uk-pods/clips"
+                        # We need to handle this carefully
+                        if rel_path.startswith("clips/"):
+                            fname = os.path.basename(rel_path)
+                            audio_path = clips_dir / fname
+                        else:
+                            audio_path = clips_dir / rel_path
+                            
+                        if audio_path.exists():
+                            dur = get_audio_duration(str(audio_path))
+                            if 0.5 < dur < 30:
+                                samples.append({
+                                    "audio_path": str(audio_path),
+                                    "text": text,
+                                    "language": "uk",
+                                    "speaker_id": "uk_pod",
+                                    "duration": dur
+                                })
+                                count += 1
+                    except: continue
+        except: pass
+        print(f"   Parsed {count} from {jf.name}")
         
-        if not tsv_path.exists():
-            continue
-        
-        with open(tsv_path, 'r', encoding='utf-8') as f:
-            header = f.readline().strip().split('\t')
-            
-            # Find column indices
-            try:
-                path_idx = header.index('path')
-                sentence_idx = header.index('sentence')
-                client_idx = header.index('client_id') if 'client_id' in header else None
-            except ValueError:
-                continue
-            
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) <= max(path_idx, sentence_idx):
-                    continue
-                
-                audio_filename = parts[path_idx]
-                text = parts[sentence_idx]
-                speaker_id = f"cv_{parts[client_idx][:8]}" if client_idx and len(parts) > client_idx else "cv_unknown"
-                
-                audio_path = clips_dir / audio_filename
-                if not audio_path.exists():
-                    # Try with .mp3 extension
-                    audio_path = clips_dir / (audio_filename.replace('.mp3', '') + '.mp3')
-                
-                if audio_path.exists():
-                    duration = get_audio_duration(str(audio_path))
-                    
-                    if 0.5 < duration < 30:
-                        samples.append({
-                            "audio_path": str(audio_path),
-                            "text": text.strip(),
-                            "language": "uk",
-                            "speaker_id": speaker_id,
-                            "duration": duration
-                        })
-    
-    print(f"  Found {len(samples)} samples from Common Voice")
+    print(f"   ✅ Podcasts total: {len(samples)}")
     return samples
-
-
-def process_ljspeech(data_dir: Path) -> List[Dict]:
-    """Process LJSpeech dataset (English)."""
-    samples = []
-    lj_dir = data_dir / "english" / "LJSpeech-1.1"
-    
-    if not lj_dir.exists():
-        print(f"LJSpeech not found at {lj_dir}")
-        return samples
-    
-    print("Processing LJSpeech...")
-    
-    metadata_path = lj_dir / "metadata.csv"
-    wavs_dir = lj_dir / "wavs"
-    
-    if not metadata_path.exists():
-        return samples
-    
-    with open(metadata_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            parts = line.strip().split('|')
-            if len(parts) >= 3:
-                file_id = parts[0]
-                text = parts[2]  # Normalized text
-                
-                audio_path = wavs_dir / f"{file_id}.wav"
-                if audio_path.exists():
-                    duration = get_audio_duration(str(audio_path))
-                    
-                    if 0.5 < duration < 30:
-                        samples.append({
-                            "audio_path": str(audio_path),
-                            "text": text.strip(),
-                            "language": "en",
-                            "speaker_id": "ljspeech",
-                            "duration": duration
-                        })
-    
-    print(f"  Found {len(samples)} samples from LJSpeech")
-    return samples
-
-
-def process_hf_dataset(dataset_name: str, language: str) -> List[Dict]:
-    """
-    Process HuggingFace dataset directly.
-    
-    Supported:
-    - speech-uk/voice-of-america
-    - Yehor/broadcast-speech-uk
-    """
-    if not HF_DATASETS_AVAILABLE:
-        print(f"huggingface datasets not available, skipping {dataset_name}")
-        return []
-    
-    samples = []
-    print(f"Processing HuggingFace dataset: {dataset_name}...")
-    
-    try:
-        dataset = load_dataset(dataset_name, split="train", streaming=True)
-        
-        count = 0
-        for item in tqdm(dataset, desc=f"Loading {dataset_name}"):
-            audio = item.get("audio", {})
-            text = item.get("text", item.get("sentence", item.get("transcription", "")))
-            
-            if not text:
-                continue
-            
-            # For streaming, we need to save audio temporarily
-            # In practice, you'd process this differently
-            duration = len(audio.get("array", [])) / audio.get("sampling_rate", 16000)
-            
-            if 0.5 < duration < 30:
-                samples.append({
-                    "audio_path": f"{dataset_name}/{count}.wav",  # Placeholder
-                    "text": text.strip(),
-                    "language": language,
-                    "speaker_id": f"{dataset_name.split('/')[-1]}_{count % 100}",
-                    "duration": duration
-                })
-                count += 1
-                
-                if count >= 100000:  # Limit for memory
-                    break
-                    
-    except Exception as e:
-        print(f"Error loading {dataset_name}: {e}")
-    
-    print(f"  Found {len(samples)} samples from {dataset_name}")
-    return samples
-
-
-def split_data(
-    samples: List[Dict],
-    val_ratio: float = 0.02,
-    test_ratio: float = 0.01,
-    seed: int = 42
-) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-    """Split samples into train/val/test sets."""
-    random.seed(seed)
-    random.shuffle(samples)
-    
-    n = len(samples)
-    n_test = int(n * test_ratio)
-    n_val = int(n * val_ratio)
-    
-    test_samples = samples[:n_test]
-    val_samples = samples[n_test:n_test + n_val]
-    train_samples = samples[n_test + n_val:]
-    
-    return train_samples, val_samples, test_samples
-
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare TTS manifests")
-    parser.add_argument("--data-dir", type=str, default="data/raw", help="Raw data directory")
-    parser.add_argument("--output-dir", type=str, default="data/manifests", help="Output directory")
-    parser.add_argument("--val-split", type=float, default=0.02, help="Validation split ratio")
-    parser.add_argument("--test-split", type=float, default=0.01, help="Test split ratio")
-    parser.add_argument("--languages", type=str, nargs="+", default=["uk"], help="Languages to process")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", default="data/raw")
+    parser.add_argument("--output-dir", default="data/manifests")
     args = parser.parse_args()
     
     data_dir = Path(args.data_dir)
@@ -397,78 +218,32 @@ def main():
     
     all_samples = []
     
-    # Process Ukrainian datasets
-    if "uk" in args.languages:
-        all_samples.extend(process_mailabs_ukrainian(data_dir))
-        all_samples.extend(process_opentts_uk(data_dir))
-        all_samples.extend(process_common_voice(data_dir))
-    
-    # Process English datasets
-    if "en" in args.languages:
-        all_samples.extend(process_ljspeech(data_dir))
+    all_samples.extend(process_opentts(data_dir))
+    all_samples.extend(process_podcasts(data_dir))
+    all_samples.extend(process_eurospeech(data_dir, max_hours=300))
     
     if not all_samples:
-        print("No samples found! Please download datasets first.")
-        print("\nDownload instructions:")
-        print("1. M-AILABS: wget http://www.caito.de/data/Training/stt_tts/uk_UK.tgz")
-        print("2. Common Voice: https://commonvoice.mozilla.org/uk/datasets")
-        print("3. OpenTTS-UK: huggingface-cli download Yehor/opentts-uk")
-        return
+        print("❌ CRITICAL: No samples found! Check paths.")
+        sys.exit(1)
+        
+    random.seed(42)
+    random.shuffle(all_samples)
     
-    print(f"\nTotal samples: {len(all_samples)}")
+    val_size = max(1, int(len(all_samples) * 0.01))
+    train_samples = all_samples[val_size:]
+    val_samples = all_samples[:val_size]
     
-    # Calculate statistics
-    total_duration = sum(s["duration"] for s in all_samples)
-    print(f"Total duration: {total_duration/3600:.1f} hours")
+    print(f"\n📊 FINAL DATASET:")
+    print(f"   Total: {len(all_samples)}")
+    print(f"   Train: {len(train_samples)}")
+    print(f"   Val:   {len(val_samples)}")
     
-    # Language breakdown
-    lang_stats = {}
-    for s in all_samples:
-        lang = s["language"]
-        lang_stats[lang] = lang_stats.get(lang, 0) + s["duration"]
-    
-    print("\nDuration by language:")
-    for lang, dur in sorted(lang_stats.items()):
-        print(f"  {lang}: {dur/3600:.1f} hours")
-    
-    # Speaker breakdown
-    speaker_stats = {}
-    for s in all_samples:
-        speaker = s["speaker_id"]
-        speaker_stats[speaker] = speaker_stats.get(speaker, 0) + 1
-    
-    print(f"\nTotal speakers: {len(speaker_stats)}")
-    
-    # Split data
-    train_samples, val_samples, test_samples = split_data(
-        all_samples,
-        val_ratio=args.val_split,
-        test_ratio=args.test_split,
-        seed=args.seed
-    )
-    
-    print(f"\nSplit: train={len(train_samples)}, val={len(val_samples)}, test={len(test_samples)}")
-    
-    # Save manifests
-    with open(output_dir / "train_manifest.json", 'w', encoding='utf-8') as f:
-        json.dump(train_samples, f, ensure_ascii=False, indent=2)
-    
-    with open(output_dir / "val_manifest.json", 'w', encoding='utf-8') as f:
-        json.dump(val_samples, f, ensure_ascii=False, indent=2)
-    
-    with open(output_dir / "test_manifest.json", 'w', encoding='utf-8') as f:
-        json.dump(test_samples, f, ensure_ascii=False, indent=2)
-    
-    # Save full manifest
-    with open(output_dir / "all_manifest.json", 'w', encoding='utf-8') as f:
-        json.dump(all_samples, f, ensure_ascii=False, indent=2)
-    
-    print(f"\nManifests saved to {output_dir}/")
-    print("  - train_manifest.json")
-    print("  - val_manifest.json")
-    print("  - test_manifest.json")
-    print("  - all_manifest.json")
-
+    with open(output_dir / "train.json", "w") as f:
+        json.dump(train_samples, f, indent=2, ensure_ascii=False)
+    with open(output_dir / "val.json", "w") as f:
+        json.dump(val_samples, f, indent=2, ensure_ascii=False)
+        
+    print(f"✅ Manifests saved.")
 
 if __name__ == "__main__":
     main()

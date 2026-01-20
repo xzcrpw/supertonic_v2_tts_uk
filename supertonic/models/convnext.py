@@ -178,6 +178,7 @@ class ConvNeXtStack(nn.Module):
         dilations: Список dilation factors для кожного блоку
         causal: Використовувати causal convolutions
         dropout: Dropout rate
+        gradient_checkpointing: Use gradient checkpointing to save memory
     """
 
     def __init__(
@@ -189,9 +190,12 @@ class ConvNeXtStack(nn.Module):
         dilations: Optional[List[int]] = None,
         causal: bool = False,
         dropout: float = 0.0,
-        layer_scale_init: float = 1e-6
+        layer_scale_init: float = 1e-6,
+        gradient_checkpointing: bool = False
     ):
         super().__init__()
+        
+        self.gradient_checkpointing = gradient_checkpointing
 
         # Якщо dilations не задано — всі 1
         if dilations is None:
@@ -224,7 +228,10 @@ class ConvNeXtStack(nn.Module):
             Output tensor [B, C, T]
         """
         for block in self.blocks:
-            x = block(x)
+            if self.gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         return x
 
 

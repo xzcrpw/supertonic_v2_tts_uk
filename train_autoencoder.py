@@ -152,10 +152,10 @@ def train_step(
     mel = batch["mel"].to(device)
     
     # ==================== Discriminator Step ====================
-    optimizer_d.zero_grad()
+    optimizer_d.zero_grad(set_to_none=True)  # More efficient than zero_grad()
     
     with autocast(enabled=use_amp, dtype=torch.bfloat16):
-        # Encode → Decode
+        # Encode → Decode (no grad for D step)
         with torch.no_grad():
             latent = encoder(mel)
             generated_audio = decoder(latent)
@@ -163,16 +163,14 @@ def train_step(
         # Match lengths
         min_len = min(audio.size(-1), generated_audio.size(-1))
         audio_trim = audio[..., :min_len]
-        generated_trim = generated_audio[..., :min_len]
+        generated_trim = generated_audio[..., :min_len].detach()  # Ensure detached
         
         # Discriminator forward
-        # MPD
         mpd_real_outputs, mpd_real_features = mpd(audio_trim)
-        mpd_fake_outputs, mpd_fake_features = mpd(generated_trim.detach())
+        mpd_fake_outputs, _ = mpd(generated_trim)
         
-        # MRD
         mrd_real_outputs, mrd_real_features = mrd(audio_trim)
-        mrd_fake_outputs, mrd_fake_features = mrd(generated_trim.detach())
+        mrd_fake_outputs, _ = mrd(generated_trim)
         
         # Combine outputs
         real_outputs = mpd_real_outputs + mrd_real_outputs
@@ -185,11 +183,14 @@ def train_step(
     scaler.scale(d_loss).backward()
     scaler.step(optimizer_d)
     
+    # Clear D-step intermediates to save memory
+    del mpd_fake_outputs, mrd_fake_outputs, fake_outputs, d_loss
+    
     # ==================== Generator Step ====================
-    optimizer_g.zero_grad()
+    optimizer_g.zero_grad(set_to_none=True)
     
     with autocast(enabled=use_amp, dtype=torch.bfloat16):
-        # Encode → Decode
+        # Encode → Decode (with gradients this time)
         latent = encoder(mel)
         generated_audio = decoder(latent)
         
@@ -199,15 +200,18 @@ def train_step(
         generated_trim = generated_audio[..., :min_len]
         
         # Discriminator forward (for generator loss)
-        mpd_real_outputs, mpd_real_features = mpd(audio_trim)
         mpd_fake_outputs, mpd_fake_features = mpd(generated_trim)
-        
-        mrd_real_outputs, mrd_real_features = mrd(audio_trim)
         mrd_fake_outputs, mrd_fake_features = mrd(generated_trim)
         
-        # Combine
+        # Combine outputs (list of tensors)
         fake_outputs = mpd_fake_outputs + mrd_fake_outputs
-        real_features = mpd_real_features + mrd_real_features
+        
+        # Features are List[List[Tensor]] - keep structure!
+        # Detach real features from D step
+        real_features_detached = [
+            [f.detach() for f in feat_list] 
+            for feat_list in (mpd_real_features + mrd_real_features)
+        ]
         fake_features = mpd_fake_features + mrd_fake_features
         
         # Generator loss
@@ -215,7 +219,7 @@ def train_step(
             real_audio=audio_trim,
             generated_audio=generated_trim,
             disc_fake_outputs=fake_outputs,
-            real_features=real_features,
+            real_features=real_features_detached,
             fake_features=fake_features
         )
         g_loss = g_losses["total"]
@@ -223,6 +227,10 @@ def train_step(
     scaler.scale(g_loss).backward()
     scaler.step(optimizer_g)
     scaler.update()
+    
+    # Clean up
+    del audio, mel, latent, generated_audio, audio_trim, generated_trim
+    torch.cuda.empty_cache()
     
     return {
         "d_loss": d_losses["total"].item(),
@@ -313,13 +321,19 @@ def main(args):
         n_mels=config.audio.n_mels
     )
     
-    # Dataset
+    # Get segment_length from config (CRITICAL for OOM prevention!)
+    segment_length = config.training.get("segment_length", 176400)  # default 4 sec at 44.1kHz
+    if is_main:
+        print(f"Using segment_length: {segment_length} samples ({segment_length/config.audio.sample_rate:.1f} sec)")
+    
+    # Dataset with segment cropping
     train_dataset = AutoencoderDataset(
         manifest_path=config.data.train_manifest,
         audio_processor=audio_processor,
         max_duration=config.data.max_audio_duration,
         min_duration=config.data.min_audio_duration,
-        return_mel=True
+        return_mel=True,
+        segment_length=segment_length  # Random crop for memory efficiency
     )
     
     val_dataset = AutoencoderDataset(
@@ -327,7 +341,8 @@ def main(args):
         audio_processor=audio_processor,
         max_duration=config.data.max_audio_duration,
         min_duration=config.data.min_audio_duration,
-        return_mel=True
+        return_mel=True,
+        segment_length=segment_length
     )
     
     # DataLoader
@@ -361,12 +376,17 @@ def main(args):
     )
     
     # Models
+    gradient_checkpointing = config.optimization.get("gradient_checkpointing", False)
+    if is_main:
+        print(f"Gradient checkpointing: {gradient_checkpointing}")
+    
     encoder = LatentEncoder(
         input_dim=config.autoencoder.encoder.input_dim,
         hidden_dim=config.autoencoder.encoder.hidden_dim,
         output_dim=config.autoencoder.encoder.output_dim,
         num_blocks=config.autoencoder.encoder.num_blocks,
-        kernel_size=config.autoencoder.encoder.kernel_size
+        kernel_size=config.autoencoder.encoder.kernel_size,
+        gradient_checkpointing=gradient_checkpointing
     ).to(device)
     
     decoder = LatentDecoder(
@@ -375,7 +395,8 @@ def main(args):
         num_blocks=config.autoencoder.decoder.num_blocks,
         kernel_size=config.autoencoder.decoder.kernel_size,
         dilations=config.autoencoder.decoder.dilations,
-        causal=config.autoencoder.decoder.causal
+        causal=config.autoencoder.decoder.causal,
+        gradient_checkpointing=gradient_checkpointing
     ).to(device)
     
     mpd = MultiPeriodDiscriminator(

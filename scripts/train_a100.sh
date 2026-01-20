@@ -6,6 +6,12 @@
 
 set -e
 
+# =============================================================================
+# CRITICAL: CUDA Memory Optimization
+# =============================================================================
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
+export CUDA_LAUNCH_BLOCKING=0
+
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║     Supertonic v2 TTS - A100 80GB Training Pipeline            ║"
 echo "╚════════════════════════════════════════════════════════════════╝"

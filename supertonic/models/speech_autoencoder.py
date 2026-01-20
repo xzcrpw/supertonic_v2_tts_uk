@@ -197,6 +197,15 @@ class LatentEncoder(nn.Module):
         num_blocks: int = 10,
         kernel_size: int = 7,
         intermediate_mult: int = 4
+    def __init__(
+        self,
+        input_dim: int = 228,
+        hidden_dim: int = 512,
+        output_dim: int = 24,
+        num_blocks: int = 10,
+        kernel_size: int = 7,
+        intermediate_mult: int = 4,
+        gradient_checkpointing: bool = False
     ):
         super().__init__()
 
@@ -215,7 +224,8 @@ class LatentEncoder(nn.Module):
             intermediate_dim=hidden_dim * intermediate_mult,
             kernel_size=kernel_size,
             dilations=None,  # Всі dilation = 1
-            causal=False
+            causal=False,
+            gradient_checkpointing=gradient_checkpointing
         )
 
         # Output projection: hidden → latent
@@ -344,7 +354,8 @@ class LatentDecoder(nn.Module):
         dilations: Optional[List[int]] = None,
         n_fft: int = 2048,
         hop_length: int = 512,
-        causal: bool = True
+        causal: bool = True,
+        gradient_checkpointing: bool = False
     ):
         super().__init__()
 
@@ -365,7 +376,8 @@ class LatentDecoder(nn.Module):
             intermediate_dim=hidden_dim * intermediate_mult,
             kernel_size=kernel_size,
             dilations=dilations,
-            causal=causal
+            causal=causal,
+            gradient_checkpointing=gradient_checkpointing
         )
 
         # iSTFT head

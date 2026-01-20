@@ -39,6 +39,7 @@ class AutoencoderDataset(Dataset):
         max_duration: Maximum audio duration in seconds
         min_duration: Minimum audio duration in seconds
         return_mel: Return mel spectrogram instead of raw audio
+        segment_length: Fixed segment length in samples (for memory efficiency!)
     """
     
     def __init__(
@@ -48,7 +49,8 @@ class AutoencoderDataset(Dataset):
         max_duration: float = 30.0,
         min_duration: float = 0.5,
         return_mel: bool = False,
-        cache_audio: bool = False
+        cache_audio: bool = False,
+        segment_length: Optional[int] = None  # e.g., 176400 for 4 seconds at 44.1kHz
     ):
         self.manifest_path = Path(manifest_path)
         self.audio_processor = audio_processor or AudioProcessor()
@@ -56,6 +58,7 @@ class AutoencoderDataset(Dataset):
         self.min_duration = min_duration
         self.return_mel = return_mel
         self.cache_audio = cache_audio
+        self.segment_length = segment_length  # Critical for OOM prevention!
         
         # Load manifest
         self.samples = self._load_manifest()
@@ -91,6 +94,12 @@ class AutoencoderDataset(Dataset):
             audio = self.audio_processor.load(audio_path)
             if self._cache is not None:
                 self._cache[audio_path] = audio
+        
+        # CRITICAL: Random crop to segment_length to prevent OOM!
+        if self.segment_length is not None and len(audio) > self.segment_length:
+            max_start = len(audio) - self.segment_length
+            start = random.randint(0, max_start)
+            audio = audio[start:start + self.segment_length]
         
         result = {"audio": audio}
         

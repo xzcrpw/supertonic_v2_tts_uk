@@ -43,9 +43,12 @@ model:
 
 # Training settings - A100 80GB optimized
 training:
+  # Audio segmentation (critical for memory!)
+  segment_length: 176400    # 4 seconds at 44.1kHz - prevents OOM
+  
   # Stage 1: Autoencoder
   autoencoder:
-    batch_size: 32          # A100 80GB can handle 32
+    batch_size: 8           # Safe batch size
     learning_rate: 1.0e-4
     num_epochs: 500
     warmup_steps: 5000
@@ -105,8 +108,8 @@ inference:
 optimization:
   use_amp: true             # Mixed precision (bfloat16)
   amp_dtype: "bfloat16"     # A100 supports bfloat16
-  gradient_checkpointing: false  # 80GB VRAM is enough
-  compile_model: true       # torch.compile for speed
+  gradient_checkpointing: true   # ENABLED - saves ~40% VRAM
+  compile_model: false      # Disabled - can cause issues with checkpointing
   
 # Hardware
 hardware:
@@ -120,3 +123,61 @@ paths:
   manifest_val: "data/manifests/val.json"
   checkpoint_dir: "checkpoints"
   log_dir: "logs"
+
+# Logging
+logging:
+  project: "supertonic-v2-uk"
+  log_interval: 50
+
+# Output directories
+output:
+  checkpoint_dir: "checkpoints"
+  sample_dir: "samples"
+
+# Data paths and constraints
+data:
+  train_manifest: "data/manifests/train.json"
+  val_manifest: "data/manifests/val.json"
+  min_audio_duration: 0.5
+  max_audio_duration: 10.0   # REDUCED from 30s - major OOM fix!
+  max_text_length: 500
+
+# Autoencoder training specific settings
+train_autoencoder:
+  batch_size: 8            # REDUCED from 12 - OOM fix
+  gradient_accumulation_steps: 2  # Effective batch = 16
+  learning_rate: 0.0001
+  total_iterations: 1000000
+  checkpoint_interval: 5000
+  validation_interval: 1000
+  amp:
+    enabled: true
+  optimizer:
+    betas: [0.8, 0.99]
+    weight_decay: 0.01
+  loss_weights:
+    reconstruction: 45.0
+    adversarial: 1.0
+    feature_matching: 0.1
+  discriminator:
+    mpd_periods: [2, 3, 5, 7, 11]
+    mrd_fft_sizes: [512, 1024, 2048]
+
+# Model Architecture Configuration
+autoencoder:
+  encoder:
+    input_dim: 228
+    hidden_dim: 512
+    output_dim: 24
+    num_blocks: 10
+    kernel_size: 7
+  decoder:
+    input_dim: 24
+    hidden_dim: 512
+    num_blocks: 10
+    kernel_size: 7
+    dilations: [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
+    causal: true
+  discriminator:
+    mpd_periods: [2, 3, 5, 7, 11]
+    mrd_fft_sizes: [512, 1024, 2048]

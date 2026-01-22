@@ -42,8 +42,15 @@ model = SpeechAutoencoder(
     # Keep default num_blocks=10 to match decoder_dilations=[1,2,4,1,2,4,1,1,1,1]
 ).to(device)
 
-# Load weights
-if "model" in checkpoint:
+# Load weights - checkpoint stores components separately
+if "encoder" in checkpoint and "decoder" in checkpoint:
+    model.encoder.load_state_dict(checkpoint["encoder"])
+    model.decoder.load_state_dict(checkpoint["decoder"])
+    if "mpd" in checkpoint:
+        model.mpd.load_state_dict(checkpoint["mpd"])
+    if "mrd" in checkpoint:
+        model.mrd.load_state_dict(checkpoint["mrd"])
+elif "model" in checkpoint:
     model.load_state_dict(checkpoint["model"])
 elif "model_state_dict" in checkpoint:
     model.load_state_dict(checkpoint["model_state_dict"])

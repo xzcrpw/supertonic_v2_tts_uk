@@ -31,6 +31,7 @@ print(f"Model config: {model_cfg}")
 print(f"Audio config: {audio_cfg}")
 
 # Create model with correct config
+# Use default num_blocks (10) to match default decoder_dilations
 model = SpeechAutoencoder(
     sample_rate=audio_cfg.get("sample_rate", 44100),
     n_fft=audio_cfg.get("n_fft", 2048),
@@ -38,8 +39,7 @@ model = SpeechAutoencoder(
     n_mels=model_cfg.get("in_channels", 228),
     latent_dim=model_cfg.get("latent_dim", 32),
     hidden_dim=model_cfg.get("hidden_dims", [512])[-1] if isinstance(model_cfg.get("hidden_dims"), list) else 512,
-    num_encoder_blocks=model_cfg.get("num_convnext_blocks", 4) * 2,
-    num_decoder_blocks=model_cfg.get("num_convnext_blocks", 4) * 2,
+    # Keep default num_blocks=10 to match decoder_dilations=[1,2,4,1,2,4,1,1,1,1]
 ).to(device)
 
 # Load weights

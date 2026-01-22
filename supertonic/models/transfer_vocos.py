@@ -58,8 +58,7 @@ class EncoderToVocosAdapter(nn.Module):
             nn.GELU(),
             ConvNeXtBlock(dim=128, intermediate_dim=512, kernel_size=7, dilation=1),
             ConvNeXtBlock(dim=128, intermediate_dim=512, kernel_size=7, dilation=2),
-            nn.Conv1d(128, 100, kernel_size=1),
-            nn.LayerNorm(100)
+            nn.Conv1d(128, 100, kernel_size=1)
         )
         
         # Latent projection: 24-dim → 100-dim (для Vocos decoder)

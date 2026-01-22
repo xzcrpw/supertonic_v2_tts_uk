@@ -73,24 +73,25 @@ def train_step(
         ctx = autocast(enabled=use_amp, dtype=torch.bfloat16)
     
     with ctx:
-        # Reconstruction
-        recon_audio = model(audio)
+        # Encode to features (this is what we're training)
+        features = model.encode(audio)  # [B, 100, T]
         
-        # Crop to min length (Vocos може генерувати трохи довший audio)
-        min_len = min(recon_audio.shape[-1], audio.shape[-1])
-        recon_audio = recon_audio[..., :min_len]
-        audio_cropped = audio[..., :min_len]
-        
-        # L1 reconstruction loss
-        recon_loss = F.l1_loss(recon_audio, audio_cropped)
-        
-        # Mel matching loss (додатково)
+        # Get target features from Vocos directly
         with torch.no_grad():
-            mel_target = model.vocos.feature_extractor(audio_cropped)
-        mel_recon = model.vocos.feature_extractor(recon_audio)
-        mel_loss = F.l1_loss(mel_recon, mel_target)
+            target_features = model.vocos.feature_extractor(audio)  # [B, 100, T]
         
-        total_loss = recon_loss + mel_loss * 10.0
+        # Match lengths
+        min_len = min(features.shape[-1], target_features.shape[-1])
+        features = features[..., :min_len]
+        target_features = target_features[..., :min_len]
+        
+        # Feature matching loss (L1)
+        feature_loss = F.l1_loss(features, target_features)
+        
+        # Mel spectral loss (additional)
+        mel_loss = F.mse_loss(features, target_features)
+        
+        total_loss = feature_loss + mel_loss * 0.5
     
     scaler.scale(total_loss).backward()
     
@@ -105,7 +106,7 @@ def train_step(
     
     return {
         "loss": total_loss.item(),
-        "recon_loss": recon_loss.item(),
+        "feature_loss": feature_loss.item(),
         "mel_loss": mel_loss.item()
     }
 
@@ -294,7 +295,7 @@ def main(args):
             if iteration % log_interval == 0:
                 pbar.set_postfix({
                     "loss": f"{losses['loss']:.4f}",
-                    "recon": f"{losses['recon_loss']:.4f}",
+                    "feat": f"{losses['feature_loss']:.4f}",
                     "mel": f"{losses['mel_loss']:.4f}"
                 })
                 pbar.update(log_interval)

@@ -17,9 +17,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 import torchaudio
+
+try:
+    from torch.amp import GradScaler, autocast
+except ImportError:
+    from torch.cuda.amp import GradScaler, autocast
 
 from omegaconf import OmegaConf
 
@@ -62,7 +66,13 @@ def train_step(
     # Resample to 24kHz
     audio = torchaudio.functional.resample(audio, 44100, 24000)
     
-    with autocast(enabled=use_amp, dtype=torch.bfloat16):
+    # Auto-detect autocast API
+    try:
+        ctx = autocast("cuda", enabled=use_amp, dtype=torch.bfloat16)
+    except TypeError:
+        ctx = autocast(enabled=use_amp, dtype=torch.bfloat16)
+    
+    with ctx:
         # Reconstruction
         recon_audio = model(audio)
         
@@ -186,9 +196,10 @@ def main(args):
     
     try:
         scaler = GradScaler("cuda", enabled=config.train.amp.enabled)
-    except TypeError:
+    except (TypeError, AttributeError):
         # Fallback for older PyTorch
-        scaler = GradScaler(enabled=config.train.amp.enabled)
+        from torch.cuda.amp import GradScaler as OldGradScaler
+        scaler = OldGradScaler(enabled=config.train.amp.enabled)
     
     # Resume
     start_iteration = 0

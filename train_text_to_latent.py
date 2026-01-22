@@ -395,22 +395,26 @@ def main(args):
         train_sampler = None
         shuffle = True
     
+    num_workers = getattr(args, 'num_workers', 8)
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.train_tts.batch_size,
         shuffle=shuffle,
         sampler=train_sampler,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
         collate_fn=tts_collate_fn,
-        drop_last=True
+        drop_last=True,
+        prefetch_factor=4,
+        persistent_workers=True
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.train_tts.batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=num_workers,
         collate_fn=tts_collate_fn
     )
     
@@ -572,6 +576,8 @@ if __name__ == "__main__":
     parser.add_argument("--autoencoder-checkpoint", type=str, required=True,
                         help="Path to pretrained autoencoder checkpoint")
     parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=8,
+                        help="Number of DataLoader workers")
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--no-wandb", action="store_true")
     

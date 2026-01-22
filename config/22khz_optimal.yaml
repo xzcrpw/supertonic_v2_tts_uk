@@ -1,0 +1,217 @@
+# ============================================================================
+# SUPERTONIC V2 TTS - 22kHz OPTIMAL CONFIGURATION
+# ============================================================================
+# Optimized for:
+#   - RTX PRO 6000 96GB (vast.ai $0.446/hr)
+#   - 22050Hz sample rate (TTS standard, no wasted compute on >11kHz)
+#   - Waveform L1 loss to preserve low frequencies (fixes metallic sound)
+#   - Maximal batch size for fastest convergence
+#
+# Expected training time (autoencoder):
+#   - ~1.2s/iteration with batch_size=32
+#   - 100k iterations = ~33 hours = ~$15
+# ============================================================================
+
+# ========== AUDIO CONFIGURATION ==========
+audio:
+  sample_rate: 22050          # TTS standard - 11kHz Nyquist is enough for speech
+  n_fft: 1024                 # Adjusted for 22kHz (46.4ms window)
+  hop_length: 256             # 11.6ms hop - same timing as 44.1kHz/512
+  win_length: 1024
+  n_mels: 100                 # Standard for TTS (80-128 typical)
+  mel_fmin: 20.0
+  mel_fmax: 11025.0           # Nyquist limit for 22kHz
+
+# ========== MODEL ARCHITECTURE ==========
+model:
+  autoencoder:
+    # Encoder: mel(100) → hidden(512) → latent(24)
+    encoder:
+      input_dim: 100          # n_mels
+      hidden_dim: 512
+      output_dim: 24          # latent dimension (paper spec)
+      num_blocks: 10          # 10 ConvNeXt blocks (paper spec)
+      kernel_size: 7
+      intermediate_mult: 4    # 512 * 4 = 2048 intermediate
+      gradient_checkpointing: false  # 96GB - not needed
+    
+    # Decoder: latent(24) → hidden(512) → iSTFT → waveform
+    decoder:
+      input_dim: 24
+      hidden_dim: 512
+      num_blocks: 10
+      kernel_size: 7
+      intermediate_mult: 4
+      # Dilations from paper: receptive field ~1 second
+      dilations: [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
+      n_fft: 1024
+      hop_length: 256
+      causal: true            # For streaming inference
+      gradient_checkpointing: false
+
+    # Discriminators (HiFi-GAN style)
+    discriminator:
+      mpd_periods: [2, 3, 5, 7, 11]
+      mrd_fft_sizes: [256, 512, 1024]  # Adjusted for 22kHz
+  
+  # Text-to-Latent (Stage 2)
+  text_to_latent:
+    reference_encoder:
+      input_dim: 144          # Compressed latent (24 * 6)
+      hidden_dim: 128
+      num_convnext_blocks: 6
+      num_cross_attn_layers: 2
+      num_output_vectors: 50  # Fixed reference vectors
+      kernel_size: 5
+      intermediate_mult: 4
+
+    text_encoder:
+      vocab_size: 512         # Extended multilingual
+      embed_dim: 128
+      hidden_dim: 512
+      num_convnext_blocks: 6
+      num_self_attn_blocks: 4
+      num_cross_attn_layers: 2
+      num_heads: 4
+      kernel_size: 5
+
+    vector_field:
+      hidden_dim: 512
+      num_blocks: 8
+      kernel_size: 7
+      dilations: [1, 2, 4, 8, 1, 2, 4, 8]
+      num_heads: 4
+
+  # Duration Predictor (Stage 3)
+  duration_predictor:
+    text_dim: 512
+    hidden_dim: 256
+    num_layers: 4
+    kernel_size: 3
+    dropout: 0.1
+
+# ========== LAROPE CONFIGURATION ==========
+larope:
+  gamma: 10                   # Paper optimal for TTS alignment
+  base: 10000
+
+# ========== FLOW MATCHING ==========
+flow_matching:
+  sigma_min: 1.0e-8
+  p_uncond: 0.05              # CFG dropout probability
+  cfg_scale: 3.0              # Classifier-free guidance scale
+  nfe: 32                     # Number of function evaluations
+
+# ========== LANGUAGES ==========
+languages:
+  supported: ["uk"]           # Ukrainian only for now
+  embedding_dim: 4
+
+# ========== TRAINING: AUTOENCODER (Stage 1) ==========
+train_autoencoder:
+  # Batch & segment settings
+  batch_size: 32              # Sweet spot for 96GB with 22kHz
+  segment_length: 132300      # 6 seconds at 22050Hz
+  gradient_accumulation_steps: 1
+  
+  # Optimizer
+  learning_rate: 1.0e-4
+  optimizer:
+    betas: [0.8, 0.99]        # AdamW betas from HiFi-GAN
+    weight_decay: 0.01
+  
+  # Schedule
+  total_iterations: 200000    # Faster convergence with 22kHz
+  warmup_steps: 5000
+  checkpoint_interval: 10000
+  validation_interval: 5000
+  log_interval: 100
+  
+  # Loss weights (CRITICAL for quality!)
+  loss_weights:
+    reconstruction: 45.0      # Multi-resolution mel L1
+    waveform: 10.0            # Waveform L1 - FIXES METALLIC SOUND
+    adversarial: 1.0          # GAN loss
+    feature_matching: 0.1     # Discriminator feature matching
+  
+  # AMP
+  amp:
+    enabled: true
+    dtype: bfloat16           # Best for Ampere+ GPUs
+  
+  # DataLoader
+  num_workers: 8
+  pin_memory: true
+
+# ========== TRAINING: TEXT-TO-LATENT (Stage 2) ==========
+train_tts:
+  batch_size: 64
+  expansion_factor: 4         # Ke for context sharing
+  effective_batch: 256        # batch × expansion
+  
+  learning_rate: 5.0e-4
+  optimizer:
+    type: AdamW
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+  
+  total_iterations: 500000
+  lr_halve_interval: 200000
+  checkpoint_interval: 10000
+  validation_interval: 5000
+  
+  amp:
+    enabled: true
+    dtype: bfloat16
+
+# ========== TRAINING: DURATION (Stage 3) ==========
+train_duration:
+  batch_size: 256
+  learning_rate: 5.0e-4
+  total_iterations: 5000
+  checkpoint_interval: 1000
+  
+  optimizer:
+    type: AdamW
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+# ========== INFERENCE ==========
+inference:
+  num_steps: 32               # ODE steps
+  solver: euler
+  cfg_scale: 3.0
+
+# ========== HARDWARE ==========
+hardware:
+  device: cuda
+  num_gpus: 1
+  
+optimization:
+  use_amp: true
+  amp_dtype: bfloat16
+  gradient_checkpointing: false  # 96GB - not needed
+  compile_model: false           # torch.compile experimental
+
+# ========== PATHS ==========
+paths:
+  data_dir: data/processed
+  manifest_train: data/manifests/train.json
+  manifest_val: data/manifests/val.json
+  checkpoint_dir: checkpoints
+  log_dir: logs
+  sample_dir: samples
+
+# ========== DATA CONSTRAINTS ==========
+data:
+  train_manifest: data/manifests/train.json
+  val_manifest: data/manifests/val.json
+  min_audio_duration: 0.5     # Skip very short clips
+  max_audio_duration: 15.0    # Skip very long clips
+  max_text_length: 500
+
+# ========== LOGGING ==========
+logging:
+  project: supertonic-v2-uk-22k
+  log_interval: 100
+  use_wandb: true

@@ -245,9 +245,9 @@ def main(args):
         train_dataset,
         batch_size=config.train.batch_size,
         shuffle=True,
-        num_workers=16,
+        num_workers=24,
         pin_memory=True,
-        prefetch_factor=4,
+        prefetch_factor=8,
         persistent_workers=True,
         collate_fn=collate_fn,
         drop_last=True
@@ -258,7 +258,8 @@ def main(args):
         batch_size=config.train.batch_size,
         shuffle=False,
         num_workers=8,
-        prefetch_factor=2,
+        prefetch_factor=4,
+        persistent_workers=True,
         collate_fn=collate_fn
     )
     

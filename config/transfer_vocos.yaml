@@ -28,10 +28,10 @@ data:
 
 # Training (швидше бо тренуємо тільки adapter)
 train:
-  batch_size: 512
+  batch_size: 2048
   gradient_accumulation_steps: 1
-  learning_rate: 0.0005    # Вищий LR для швидкого адаптера
-  total_iterations: 5000   # Зменшили бо batch більший
+  learning_rate: 0.001     # Більший batch = більший LR
+  total_iterations: 1500   # batch 2048 x 1500 = 3M samples
   checkpoint_interval: 2000
   validation_interval: 1000
   

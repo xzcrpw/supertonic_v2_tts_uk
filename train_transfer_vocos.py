@@ -66,12 +66,17 @@ def train_step(
         # Reconstruction
         recon_audio = model(audio)
         
+        # Crop to min length (Vocos може генерувати трохи довший audio)
+        min_len = min(recon_audio.shape[-1], audio.shape[-1])
+        recon_audio = recon_audio[..., :min_len]
+        audio_cropped = audio[..., :min_len]
+        
         # L1 reconstruction loss
-        recon_loss = F.l1_loss(recon_audio, audio)
+        recon_loss = F.l1_loss(recon_audio, audio_cropped)
         
         # Mel matching loss (додатково)
         with torch.no_grad():
-            mel_target = model.vocos.feature_extractor(audio)
+            mel_target = model.vocos.feature_extractor(audio_cropped)
         mel_recon = model.vocos.feature_extractor(recon_audio)
         mel_loss = F.l1_loss(mel_recon, mel_target)
         

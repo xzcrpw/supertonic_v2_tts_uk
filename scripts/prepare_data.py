@@ -263,22 +263,32 @@ def download_opentts(
                     text_map[filename] = text
                 
                 # Match files with texts
+                loaded_count = 0
                 for wav_file in sorted(voice_dir.glob("*.wav")):
                     try:
                         info = torchaudio.info(str(wav_file))
                         duration = info.num_frames / info.sample_rate
                         text = text_map.get(wav_file.name, "")
+                        
+                        # Calculate relative path properly
+                        try:
+                            rel_path = wav_file.relative_to(output_dir)
+                        except ValueError:
+                            # If relative_to fails, construct path manually
+                            rel_path = Path("opentts") / "audio" / voice_name / wav_file.name
+                        
                         manifest_entries.append({
-                            "audio_path": str(wav_file.relative_to(output_dir)),
+                            "audio_path": str(rel_path),
                             "text": text,
                             "speaker_id": voice_name,
                             "duration": round(duration, 3),
                             "sample_rate": target_sr,
                             "source": "opentts",
                         })
-                    except:
+                        loaded_count += 1
+                    except Exception as e:
                         pass
-                print(f"      ✅ Loaded {len(text_map)} texts")
+                print(f"      ✅ Loaded {loaded_count} entries with texts")
             except Exception as e:
                 print(f"      ⚠️ Could not load texts: {e}")
                 # Fallback - add entries without text
@@ -286,8 +296,12 @@ def download_opentts(
                     try:
                         info = torchaudio.info(str(wav_file))
                         duration = info.num_frames / info.sample_rate
+                        try:
+                            rel_path = wav_file.relative_to(output_dir)
+                        except ValueError:
+                            rel_path = Path("opentts") / "audio" / voice_name / wav_file.name
                         manifest_entries.append({
-                            "audio_path": str(wav_file.relative_to(output_dir)),
+                            "audio_path": str(rel_path),
                             "text": "",
                             "speaker_id": voice_name,
                             "duration": round(duration, 3),
@@ -657,7 +671,7 @@ Examples:
     
     check_dependencies()
     
-    output_dir = Path(args.output)
+    output_dir = Path(args.output).resolve()  # Use absolute path
     output_dir.mkdir(parents=True, exist_ok=True)
     
     all_entries = []

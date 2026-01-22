@@ -57,6 +57,11 @@ import json
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+
+# Number of parallel workers for file I/O
+NUM_WORKERS = 20
 
 try:
     import torch
@@ -172,6 +177,62 @@ def estimate_hours(preset: str) -> str:
 
 
 # ============================================================================
+# PARALLEL PROCESSING HELPERS
+# ============================================================================
+
+def save_audio_worker(args):
+    """Worker function for parallel audio saving."""
+    idx, audio_array, sr, text, target_sr, audio_path, output_dir, speaker_id, source = args
+    
+    try:
+        waveform = torch.tensor(audio_array).unsqueeze(0).float()
+        
+        if sr != target_sr:
+            resampler = torchaudio.transforms.Resample(sr, target_sr)
+            waveform = resampler(waveform)
+        
+        torchaudio.save(str(audio_path), waveform, target_sr)
+        
+        duration = waveform.shape[1] / target_sr
+        
+        return {
+            "audio_path": str(audio_path.relative_to(output_dir)),
+            "text": text,
+            "speaker_id": speaker_id,
+            "duration": round(duration, 3),
+            "sample_rate": target_sr,
+            "source": source,
+        }
+    except Exception as e:
+        return None
+
+
+def get_audio_info_worker(args):
+    """Worker function for parallel audio info extraction."""
+    wav_file, output_dir, text, speaker_id, target_sr, source = args
+    
+    try:
+        info = torchaudio.info(str(wav_file))
+        duration = info.num_frames / info.sample_rate
+        
+        try:
+            rel_path = wav_file.relative_to(output_dir)
+        except ValueError:
+            rel_path = Path(source) / "audio" / speaker_id / wav_file.name
+        
+        return {
+            "audio_path": str(rel_path),
+            "text": text,
+            "speaker_id": speaker_id,
+            "duration": round(duration, 3),
+            "sample_rate": target_sr,
+            "source": source,
+        }
+    except Exception as e:
+        return None
+
+
+# ============================================================================
 # DATASET DOWNLOADERS
 # ============================================================================
 
@@ -253,7 +314,7 @@ def download_opentts(
             print(f"\n   ✅ {voice_name}: Already downloaded ({existing_count} files)")
             print(f"      Loading texts from HuggingFace...")
             
-            # Load dataset to get texts (streaming to avoid re-downloading audio)
+            # Load dataset to get texts
             try:
                 ds = load_dataset(repo_id, split="train")
                 text_map = {}
@@ -262,54 +323,27 @@ def download_opentts(
                     text = item.get("text", item.get("sentence", ""))
                     text_map[filename] = text
                 
-                # Match files with texts
+                # Parallel loading of audio info
+                wav_files = sorted(voice_dir.glob("*.wav"))
+                tasks = []
+                for wav_file in wav_files:
+                    text = text_map.get(wav_file.name, "")
+                    tasks.append((wav_file, output_dir, text, voice_name, target_sr, "opentts"))
+                
                 loaded_count = 0
-                for wav_file in sorted(voice_dir.glob("*.wav")):
-                    try:
-                        info = torchaudio.info(str(wav_file))
-                        duration = info.num_frames / info.sample_rate
-                        text = text_map.get(wav_file.name, "")
-                        
-                        # Calculate relative path properly
-                        try:
-                            rel_path = wav_file.relative_to(output_dir)
-                        except ValueError:
-                            # If relative_to fails, construct path manually
-                            rel_path = Path("opentts") / "audio" / voice_name / wav_file.name
-                        
-                        manifest_entries.append({
-                            "audio_path": str(rel_path),
-                            "text": text,
-                            "speaker_id": voice_name,
-                            "duration": round(duration, 3),
-                            "sample_rate": target_sr,
-                            "source": "opentts",
-                        })
-                        loaded_count += 1
-                    except Exception as e:
-                        pass
+                with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                    futures = [executor.submit(get_audio_info_worker, task) for task in tasks]
+                    for future in as_completed(futures):
+                        result = future.result()
+                        if result:
+                            manifest_entries.append(result)
+                            loaded_count += 1
+                
                 print(f"      ✅ Loaded {loaded_count} entries with texts")
             except Exception as e:
                 print(f"      ⚠️ Could not load texts: {e}")
-                # Fallback - add entries without text
-                for wav_file in sorted(voice_dir.glob("*.wav")):
-                    try:
-                        info = torchaudio.info(str(wav_file))
-                        duration = info.num_frames / info.sample_rate
-                        try:
-                            rel_path = wav_file.relative_to(output_dir)
-                        except ValueError:
-                            rel_path = Path("opentts") / "audio" / voice_name / wav_file.name
-                        manifest_entries.append({
-                            "audio_path": str(rel_path),
-                            "text": "",
-                            "speaker_id": voice_name,
-                            "duration": round(duration, 3),
-                            "sample_rate": target_sr,
-                            "source": "opentts",
-                        })
-                    except:
-                        pass
+                import traceback
+                traceback.print_exc()
             continue
         
         print(f"\n   📥 {voice_name} ({size_mb} MB, {rows} samples, {license_type})")
@@ -320,39 +354,27 @@ def download_opentts(
             
             voice_dir.mkdir(exist_ok=True)
             
-            processed = 0
+            # Collect all items first
+            items_to_process = []
             for idx, item in enumerate(ds):
                 audio_array = item["audio"]["array"]
                 sr = item["audio"]["sampling_rate"]
                 text = item.get("text", item.get("sentence", ""))
-                
-                # Save audio
                 audio_filename = f"{voice_name}_{idx:06d}.wav"
                 audio_path = voice_dir / audio_filename
-                
-                waveform = torch.tensor(audio_array).unsqueeze(0).float()
-                
-                # Resample if needed
-                if sr != target_sr:
-                    resampler = torchaudio.transforms.Resample(sr, target_sr)
-                    waveform = resampler(waveform)
-                
-                torchaudio.save(str(audio_path), waveform, target_sr)
-                
-                duration = waveform.shape[1] / target_sr
-                
-                manifest_entries.append({
-                    "audio_path": str(audio_path.relative_to(output_dir)),
-                    "text": text,
-                    "speaker_id": voice_name,
-                    "duration": round(duration, 3),
-                    "sample_rate": target_sr,
-                    "source": "opentts",
-                })
-                
-                processed += 1
-                if processed % 1000 == 0:
-                    print(f"      Processed {processed}/{rows}...")
+                items_to_process.append((idx, audio_array, sr, text, target_sr, audio_path, output_dir, voice_name, "opentts"))
+            
+            # Process in parallel
+            processed = 0
+            with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                futures = {executor.submit(save_audio_worker, item): item for item in items_to_process}
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        manifest_entries.append(result)
+                        processed += 1
+                        if processed % 1000 == 0:
+                            print(f"      Processed {processed}/{rows}...")
             
             print(f"   ✅ {voice_name}: {processed} samples saved")
             
@@ -385,20 +407,18 @@ def download_ukpods(
     
     if is_complete:
         print(f"\n   ✅ UK-Pods: Already downloaded ({existing_count} files)")
-        for wav_file in audio_dir.glob("*.wav"):
-            try:
-                info = torchaudio.info(str(wav_file))
-                duration = info.num_frames / info.sample_rate
-                manifest_entries.append({
-                    "audio_path": str(wav_file.relative_to(output_dir)),
-                    "text": "",
-                    "speaker_id": "ukpods",
-                    "duration": round(duration, 3),
-                    "sample_rate": target_sr,
-                    "source": "ukpods",
-                })
-            except:
-                pass
+        # Parallel loading
+        wav_files = list(audio_dir.glob("*.wav"))
+        tasks = [(wav_file, output_dir, "", "ukpods", target_sr, "ukpods") for wav_file in wav_files]
+        
+        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            futures = [executor.submit(get_audio_info_worker, task) for task in tasks]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    manifest_entries.append(result)
+        
+        print(f"      ✅ Loaded {len(manifest_entries)} entries")
         return manifest_entries
     
     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -408,42 +428,52 @@ def download_ukpods(
         
         print(f"\n   Total samples: {len(ds)}")
         
-        processed = 0
+        # Check dataset structure
+        sample = ds[0]
+        print(f"   Dataset keys: {list(sample.keys())}")
+        
+        # Determine audio key
+        if "audio" in sample:
+            audio_key = "audio"
+        elif "path" in sample:
+            audio_key = "path"
+        else:
+            raise ValueError(f"Unknown audio format: {list(sample.keys())}")
+        
+        # Collect items for parallel processing
+        items_to_process = []
         for idx, item in enumerate(ds):
-            audio_array = item["audio"]["array"]
-            sr = item["audio"]["sampling_rate"]
-            text = item.get("text", item.get("sentence", ""))
+            if audio_key == "audio":
+                audio_array = item["audio"]["array"]
+                sr = item["audio"]["sampling_rate"]
+            else:
+                # Dataset has path - need to load audio file
+                # This is a different format - skip for now or handle differently
+                continue
             
+            text = item.get("text", item.get("sentence", item.get("transcription", "")))
             audio_filename = f"ukpods_{idx:06d}.wav"
             audio_path = audio_dir / audio_filename
-            
-            waveform = torch.tensor(audio_array).unsqueeze(0).float()
-            
-            if sr != target_sr:
-                resampler = torchaudio.transforms.Resample(sr, target_sr)
-                waveform = resampler(waveform)
-            
-            torchaudio.save(str(audio_path), waveform, target_sr)
-            
-            duration = waveform.shape[1] / target_sr
-            
-            manifest_entries.append({
-                "audio_path": str(audio_path.relative_to(output_dir)),
-                "text": text,
-                "speaker_id": "ukpods",
-                "duration": round(duration, 3),
-                "sample_rate": target_sr,
-                "source": "ukpods",
-            })
-            
-            processed += 1
-            if processed % 5000 == 0:
-                print(f"   Processed {processed}/{len(ds)}...")
+            items_to_process.append((idx, audio_array, sr, text, target_sr, audio_path, output_dir, "ukpods", "ukpods"))
+        
+        # Process in parallel
+        processed = 0
+        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            futures = {executor.submit(save_audio_worker, item): item for item in items_to_process}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    manifest_entries.append(result)
+                    processed += 1
+                    if processed % 5000 == 0:
+                        print(f"   Processed {processed}/{len(ds)}...")
         
         print(f"   ✅ UK-Pods: {processed} samples saved")
         
     except Exception as e:
         print(f"   ❌ Error downloading UK-Pods: {e}")
+        import traceback
+        traceback.print_exc()
     
     return manifest_entries
 
@@ -461,52 +491,88 @@ def download_broadcast(
     print("   Size: ~34 GB | Duration: ~300 hours | Samples: 136,736")
     print("   URL: https://huggingface.co/datasets/Yehor/broadcast-speech-uk")
     print("   ⚠️  This will take a while...")
+    print(f"   🚀 Using {NUM_WORKERS} parallel workers")
     print("="*70)
     
     manifest_entries = []
     audio_dir = output_dir / "audio" / "broadcast"
+    
+    # Check if already downloaded
+    is_complete, existing_count = check_existing_data(audio_dir, "broadcast", 136736)
+    
+    if is_complete:
+        print(f"\n   ✅ Broadcast: Already downloaded ({existing_count} files)")
+        # Parallel loading
+        wav_files = list(audio_dir.glob("*.wav"))
+        tasks = [(wav_file, output_dir, "", "broadcast", target_sr, "broadcast") for wav_file in wav_files]
+        
+        loaded = 0
+        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            futures = [executor.submit(get_audio_info_worker, task) for task in tasks]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    manifest_entries.append(result)
+                    loaded += 1
+                    if loaded % 20000 == 0:
+                        print(f"      Loaded {loaded}/{existing_count}...")
+        
+        print(f"      ✅ Loaded {len(manifest_entries)} entries")
+        return manifest_entries
+    
     audio_dir.mkdir(parents=True, exist_ok=True)
     
     try:
         # Use streaming for large dataset
         ds = load_dataset("Yehor/broadcast-speech-uk", split="train", streaming=True)
         
+        # Batch processing for parallel saving
+        BATCH_SIZE = NUM_WORKERS * 10
+        batch = []
         processed = 0
+        
         for idx, item in enumerate(ds):
-            audio_array = item["audio"]["array"]
-            sr = item["audio"]["sampling_rate"]
-            text = item.get("text", item.get("sentence", ""))
-            
-            audio_filename = f"broadcast_{idx:06d}.wav"
-            audio_path = audio_dir / audio_filename
-            
-            waveform = torch.tensor(audio_array).unsqueeze(0).float()
-            
-            if sr != target_sr:
-                resampler = torchaudio.transforms.Resample(sr, target_sr)
-                waveform = resampler(waveform)
-            
-            torchaudio.save(str(audio_path), waveform, target_sr)
-            
-            duration = waveform.shape[1] / target_sr
-            
-            manifest_entries.append({
-                "audio_path": str(audio_path.relative_to(output_dir)),
-                "text": text,
-                "speaker_id": "broadcast",
-                "duration": round(duration, 3),
-                "sample_rate": target_sr,
-                "source": "broadcast",
-            })
-            
-            processed += 1
-            if processed % 10000 == 0:
-                print(f"   Processed {processed}...")
+            try:
+                audio_array = item["audio"]["array"]
+                sr = item["audio"]["sampling_rate"]
+                text = item.get("text", item.get("sentence", item.get("transcription", "")))
+                
+                audio_filename = f"broadcast_{idx:06d}.wav"
+                audio_path = audio_dir / audio_filename
+                batch.append((idx, audio_array, sr, text, target_sr, audio_path, output_dir, "broadcast", "broadcast"))
+                
+                # Process batch in parallel
+                if len(batch) >= BATCH_SIZE:
+                    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                        futures = [executor.submit(save_audio_worker, item) for item in batch]
+                        for future in as_completed(futures):
+                            result = future.result()
+                            if result:
+                                manifest_entries.append(result)
+                                processed += 1
+                    batch = []
+                    
+                    if processed % 10000 == 0:
+                        print(f"   Processed {processed}...")
+            except Exception as e:
+                continue
+        
+        # Process remaining batch
+        if batch:
+            with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                futures = [executor.submit(save_audio_worker, item) for item in batch]
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        manifest_entries.append(result)
+                        processed += 1
         
         print(f"   ✅ Broadcast: {processed} samples saved")
         
     except Exception as e:
         print(f"   ❌ Error downloading Broadcast: {e}")
+        import traceback
+        traceback.print_exc()
     
     return manifest_entries
 

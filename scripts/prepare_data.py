@@ -392,6 +392,8 @@ def download_ukpods(
     """
     Download UK-Pods from HuggingFace.
     Size: ~5 GB | Duration: ~51 hours | Samples: 34,231
+    
+    Note: This dataset uses audio_filepath format, need to download repo first.
     """
     print("\n" + "="*70)
     print("📥 UK-Pods (Ukrainian podcasts)")
@@ -403,7 +405,7 @@ def download_ukpods(
     audio_dir = output_dir / "audio" / "ukpods"
     
     # Check if already downloaded
-    is_complete, existing_count = check_existing_data(audio_dir, "ukpods", 34231)
+    is_complete, existing_count = check_existing_data(audio_dir, "ukpods", 30000)
     
     if is_complete:
         print(f"\n   ✅ UK-Pods: Already downloaded ({existing_count} files)")
@@ -424,42 +426,71 @@ def download_ukpods(
     audio_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        ds = load_dataset("taras-sereda/uk-pods", split="train")
+        # First download the full dataset repo (includes audio files)
+        print(f"\n   📦 Downloading dataset repository...")
+        ukpods_cache = output_dir / "ukpods_raw"
+        snapshot_download(
+            repo_id="taras-sereda/uk-pods",
+            repo_type="dataset",
+            local_dir=str(ukpods_cache),
+        )
+        print(f"   ✅ Repository downloaded to {ukpods_cache}")
         
+        # Load metadata
+        ds = load_dataset("taras-sereda/uk-pods", split="train")
         print(f"\n   Total samples: {len(ds)}")
         
         # Check dataset structure
         sample = ds[0]
         print(f"   Dataset keys: {list(sample.keys())}")
         
-        # Determine audio key
-        if "audio" in sample:
-            audio_key = "audio"
-        elif "path" in sample:
-            audio_key = "path"
-        else:
-            raise ValueError(f"Unknown audio format: {list(sample.keys())}")
+        # Process items - audio_filepath points to files in the downloaded repo
+        def process_ukpods_item(args):
+            idx, item, ukpods_cache, audio_dir, output_dir, target_sr = args
+            try:
+                audio_filepath = item.get("audio_filepath", "")
+                text = item.get("text", item.get("text_normalized", ""))
+                
+                # Find the audio file in cache
+                audio_source = ukpods_cache / audio_filepath
+                if not audio_source.exists():
+                    # Try without leading slash
+                    audio_source = ukpods_cache / audio_filepath.lstrip("/")
+                if not audio_source.exists():
+                    return None
+                
+                # Load and resample
+                waveform, sr = torchaudio.load(str(audio_source))
+                
+                if sr != target_sr:
+                    resampler = torchaudio.transforms.Resample(sr, target_sr)
+                    waveform = resampler(waveform)
+                
+                # Save to our structure
+                audio_filename = f"ukpods_{idx:06d}.wav"
+                audio_path = audio_dir / audio_filename
+                torchaudio.save(str(audio_path), waveform, target_sr)
+                
+                duration = waveform.shape[1] / target_sr
+                
+                return {
+                    "audio_path": str(audio_path.relative_to(output_dir)),
+                    "text": text,
+                    "speaker_id": "ukpods",
+                    "duration": round(duration, 3),
+                    "sample_rate": target_sr,
+                    "source": "ukpods",
+                }
+            except Exception as e:
+                return None
         
-        # Collect items for parallel processing
-        items_to_process = []
-        for idx, item in enumerate(ds):
-            if audio_key == "audio":
-                audio_array = item["audio"]["array"]
-                sr = item["audio"]["sampling_rate"]
-            else:
-                # Dataset has path - need to load audio file
-                # This is a different format - skip for now or handle differently
-                continue
-            
-            text = item.get("text", item.get("sentence", item.get("transcription", "")))
-            audio_filename = f"ukpods_{idx:06d}.wav"
-            audio_path = audio_dir / audio_filename
-            items_to_process.append((idx, audio_array, sr, text, target_sr, audio_path, output_dir, "ukpods", "ukpods"))
+        # Prepare tasks
+        tasks = [(idx, item, ukpods_cache, audio_dir, output_dir, target_sr) for idx, item in enumerate(ds)]
         
         # Process in parallel
         processed = 0
         with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            futures = {executor.submit(save_audio_worker, item): item for item in items_to_process}
+            futures = [executor.submit(process_ukpods_item, task) for task in tasks]
             for future in as_completed(futures):
                 result = future.result()
                 if result:

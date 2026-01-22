@@ -187,22 +187,22 @@ def flow_matching_loss(
     uncond_mask = torch.rand(batch_size, device=device) < p_uncond
     
     # For unconditional samples, we null out the conditioning
-    # In practice, model has learnable null embeddings
     text_cond = text_encoding.clone()
-    ref_cond = reference_encoding.clone()
+    z_ref_cond = z_ref.clone()
     
     if uncond_mask.any():
         # Zero out conditioning for unconditional samples
         text_cond[uncond_mask] = 0
-        ref_cond[uncond_mask] = 0
+        z_ref_cond[uncond_mask] = 0  # Null reference for unconditional samples
     
     # Predict velocity
+    # Note: VectorFieldEstimator uses z_ref (masked latents) for reference conditioning,
+    # not the 50-vector reference_encoding.
     predicted_velocity = model(
         z_t=z_t,
-        z_ref=z_ref,
+        z_ref=z_ref_cond,
         text_encoding=text_cond,
-        reference_encoding=ref_cond,
-        timestep=t,
+        t=t,
         text_mask=text_mask
     )
     
@@ -345,8 +345,7 @@ class ODESolver:
                 z_t=z,
                 z_ref=z_ref,
                 text_encoding=text_encoding,
-                reference_encoding=reference_encoding,
-                timestep=t,
+                t=t,
                 text_mask=text_mask
             )
             
@@ -354,14 +353,13 @@ class ODESolver:
             if self.cfg_scale > 1.0:
                 # Null conditioning
                 text_null = torch.zeros_like(text_encoding)
-                ref_null = torch.zeros_like(reference_encoding)
+                z_ref_null = torch.zeros_like(z_ref)
                 
                 velocity_uncond = model(
                     z_t=z,
-                    z_ref=z_ref,
+                    z_ref=z_ref_null,
                     text_encoding=text_null,
-                    reference_encoding=ref_null,
-                    timestep=t,
+                    t=t,
                     text_mask=text_mask
                 )
                 
@@ -485,7 +483,7 @@ def _test_flow_matching():
     
     # Test ODE solver (mock model)
     class MockVF(nn.Module):
-        def forward(self, z_t, z_ref, text_encoding, reference_encoding, timestep, text_mask=None):
+        def forward(self, z_t, z_ref, text_encoding, t, text_mask=None):
             return torch.randn_like(z_t)
     
     mock_model = MockVF()

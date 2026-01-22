@@ -144,6 +144,13 @@ def synthesize(
     """
     # Tokenize text
     text_ids = tokenizer.encode(text, return_tensor=True)
+    
+    # Clamp token IDs to valid range (vocab_size from checkpoint)
+    vocab_size = text_to_latent.text_encoder.char_embed.vocab_size
+    text_ids = text_ids.clamp(0, vocab_size - 1)
+    
+    print(f"Text tokens: {text_ids.tolist()}, max_id={text_ids.max().item()}, vocab_size={vocab_size}")
+    
     text_ids = text_ids.to(device).unsqueeze(0)
     
     # Estimate duration if not provided

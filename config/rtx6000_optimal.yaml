@@ -210,7 +210,7 @@ train_tts:
   learning_rate: 5.0e-4
   total_iterations: 700000
   lr_halve_interval: 300000
-  checkpoint_interval: 10000
+  checkpoint_interval: 5000   # Changed from 10000
   validation_interval: 2000
 
   optimizer:

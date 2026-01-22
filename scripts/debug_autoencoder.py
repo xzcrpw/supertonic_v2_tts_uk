@@ -31,13 +31,14 @@ print(f"Model config: {model_cfg}")
 print(f"Audio config: {audio_cfg}")
 
 # Create model with correct config
-# Use default num_blocks (10) to match default decoder_dilations
+# NOTE: Config says latent_dim=32 but checkpoint has latent_dim=24!
+# The checkpoint weights show the actual trained model used latent_dim=24
 model = SpeechAutoencoder(
     sample_rate=audio_cfg.get("sample_rate", 44100),
     n_fft=audio_cfg.get("n_fft", 2048),
     hop_length=audio_cfg.get("hop_length", 512),
     n_mels=model_cfg.get("in_channels", 228),
-    latent_dim=model_cfg.get("latent_dim", 32),
+    latent_dim=24,  # ACTUAL value from checkpoint weights, not config!
     hidden_dim=model_cfg.get("hidden_dims", [512])[-1] if isinstance(model_cfg.get("hidden_dims"), list) else 512,
     # Keep default num_blocks=10 to match decoder_dilations=[1,2,4,1,2,4,1,1,1,1]
 ).to(device)

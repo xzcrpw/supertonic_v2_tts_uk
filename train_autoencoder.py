@@ -383,31 +383,34 @@ def main(args):
     if is_main:
         print(f"Gradient checkpointing: {gradient_checkpointing}")
     
+    # Get autoencoder config (support both config.autoencoder and config.model.autoencoder)
+    ae_config = config.get("autoencoder", config.get("model", {}).get("autoencoder", {}))
+    
     encoder = LatentEncoder(
-        input_dim=config.autoencoder.encoder.input_dim,
-        hidden_dim=config.autoencoder.encoder.hidden_dim,
-        output_dim=config.autoencoder.encoder.output_dim,
-        num_blocks=config.autoencoder.encoder.num_blocks,
-        kernel_size=config.autoencoder.encoder.kernel_size,
+        input_dim=ae_config.encoder.input_dim,
+        hidden_dim=ae_config.encoder.hidden_dim,
+        output_dim=ae_config.encoder.output_dim,
+        num_blocks=ae_config.encoder.num_blocks,
+        kernel_size=ae_config.encoder.kernel_size,
         gradient_checkpointing=gradient_checkpointing
     ).to(device)
     
     decoder = LatentDecoder(
-        input_dim=config.autoencoder.decoder.input_dim,
-        hidden_dim=config.autoencoder.decoder.hidden_dim,
-        num_blocks=config.autoencoder.decoder.num_blocks,
-        kernel_size=config.autoencoder.decoder.kernel_size,
-        dilations=config.autoencoder.decoder.dilations,
-        causal=config.autoencoder.decoder.causal,
+        input_dim=ae_config.decoder.input_dim,
+        hidden_dim=ae_config.decoder.hidden_dim,
+        num_blocks=ae_config.decoder.num_blocks,
+        kernel_size=ae_config.decoder.kernel_size,
+        dilations=ae_config.decoder.dilations,
+        causal=ae_config.decoder.causal,
         gradient_checkpointing=gradient_checkpointing
     ).to(device)
     
     mpd = MultiPeriodDiscriminator(
-        periods=config.autoencoder.discriminator.mpd_periods
+        periods=ae_config.discriminator.mpd_periods
     ).to(device)
     
     mrd = MultiResolutionDiscriminator(
-        fft_sizes=config.autoencoder.discriminator.mrd_fft_sizes
+        fft_sizes=ae_config.discriminator.mrd_fft_sizes
     ).to(device)
     
     # DDP wrapping

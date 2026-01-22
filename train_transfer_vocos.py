@@ -30,6 +30,22 @@ from supertonic.data.dataset import AutoencoderDataset
 from supertonic.data.preprocessing import AudioProcessor
 
 
+def collate_fn(batch):
+    """Collate function для variable-length audio."""
+    # Знайти max length
+    max_len = max(item["audio"].shape[0] for item in batch)
+    
+    # Pad всі до max_len
+    audios = []
+    for item in batch:
+        audio = item["audio"]
+        if len(audio) < max_len:
+            audio = F.pad(audio, (0, max_len - len(audio)))
+        audios.append(audio)
+    
+    return {"audio": torch.stack(audios, dim=0)}
+
+
 def train_step(
     batch: dict,
     model: nn.Module,
@@ -197,7 +213,7 @@ def main(args):
         audio_processor=audio_processor,
         min_duration=config.data.min_audio_duration,
         max_duration=config.data.max_audio_duration,
-        segment_length=176400  # 4 sec at 44.1kHz
+        segment_length=None  # Variable length, handled by collate_fn
     )
     
     val_dataset = AutoencoderDataset(
@@ -205,7 +221,7 @@ def main(args):
         audio_processor=audio_processor,
         min_duration=config.data.min_audio_duration,
         max_duration=config.data.max_audio_duration,
-        segment_length=176400
+        segment_length=None
     )
     
     train_loader = DataLoader(
@@ -214,6 +230,7 @@ def main(args):
         shuffle=True,
         num_workers=4,
         pin_memory=True,
+        collate_fn=collate_fn,
         drop_last=True
     )
     
@@ -221,7 +238,8 @@ def main(args):
         val_dataset,
         batch_size=config.train.batch_size,
         shuffle=False,
-        num_workers=4
+        num_workers=4,
+        collate_fn=collate_fn
     )
     
     print(f"Train samples: {len(train_dataset)}")

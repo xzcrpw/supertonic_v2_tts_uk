@@ -209,9 +209,8 @@ def create_transfer_learning_adapter(
                 f_max=12000
             ).to(audio.device)
             
-            with torch.no_grad():
-                mel = mel_transform(audio)
-                mel = torch.log(torch.clamp(mel, min=1e-5))
+            mel = mel_transform(audio)
+            mel = torch.log(torch.clamp(mel, min=1e-5))
             return mel
     
     model = TransferLearningAutoencoder(adapter, vocos).to(device)

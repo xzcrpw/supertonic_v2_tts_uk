@@ -84,9 +84,13 @@ class EncoderToVocosAdapter(nn.Module):
         # Path 1: Adapt mel directly
         mel_100 = self.mel_adapter(mel_228)  # [B, 100, T]
         
-        # Path 2: Encode + project latents
-        with torch.no_grad() if not self.encoder.training else torch.enable_grad():
-            latent_24 = self.encoder(mel_228)  # [B, 24, T]
+        # Path 2: Encode + project latents (with gradient control)
+        if self.encoder.training:
+            # Encoder frozen but still pass gradients through projection
+            with torch.no_grad():
+                latent_24 = self.encoder(mel_228)  # [B, 24, T]
+        else:
+            latent_24 = self.encoder(mel_228)
         
         latent_24 = latent_24.transpose(1, 2)  # [B, T, 24]
         features_100_proj = self.latent_projection(latent_24)  # [B, T, 100]

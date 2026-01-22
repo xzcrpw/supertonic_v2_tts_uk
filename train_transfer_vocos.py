@@ -184,9 +184,6 @@ def main(args):
     print("Loading Dataset...")
     print("="*60)
     
-    from supertonic.models.speech_autoencoder import AutoencoderDataset
-    from supertonic.data.preprocessing import AudioProcessor
-    
     audio_processor = AudioProcessor(
         sample_rate=44100,
         n_mels=228,

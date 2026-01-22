@@ -35,19 +35,26 @@ from supertonic.data.preprocessing import AudioProcessor
 
 
 def collate_fn(batch):
-    """Collate function для variable-length audio."""
-    # Знайти max length
-    max_len = max(item["audio"].shape[0] for item in batch)
-    
-    # Pad всі до max_len
-    audios = []
+    """Collate function для variable-length audio with resampling."""
+    # Resample all to 24kHz first
+    audios_24k = []
     for item in batch:
         audio = item["audio"]
+        # Resample 44.1kHz -> 24kHz
+        audio = torchaudio.functional.resample(audio, 44100, 24000)
+        audios_24k.append(audio)
+    
+    # Find max length
+    max_len = max(a.shape[0] for a in audios_24k)
+    
+    # Pad all to max_len
+    padded = []
+    for audio in audios_24k:
         if len(audio) < max_len:
             audio = F.pad(audio, (0, max_len - len(audio)))
-        audios.append(audio)
+        padded.append(audio)
     
-    return {"audio": torch.stack(audios, dim=0)}
+    return {"audio": torch.stack(padded, dim=0)}
 
 
 def train_step(
@@ -230,7 +237,7 @@ def main(args):
         audio_processor=audio_processor,
         min_duration=config.data.min_audio_duration,
         max_duration=config.data.max_audio_duration,
-        segment_length=132300  # 3 sec at 44.1kHz
+        segment_length=88200  # 2 sec at 44.1kHz (faster!)
     )
     
     val_dataset = AutoencoderDataset(
@@ -238,7 +245,7 @@ def main(args):
         audio_processor=audio_processor,
         min_duration=config.data.min_audio_duration,
         max_duration=config.data.max_audio_duration,
-        segment_length=132300
+        segment_length=88200
     )
     
     train_loader = DataLoader(

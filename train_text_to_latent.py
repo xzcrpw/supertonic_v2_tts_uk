@@ -215,19 +215,21 @@ def train_step(
             ref_latent = latent_encoder(reference_mel_exp)
             ref_compressed = compress_latents(ref_latent, compression_factor=6)
         
-        # 4. Encode text and reference через TTS model
-        text_encoding = text_to_latent.encode_text(
-            text_ids_exp, 
-            text_mask_exp,
-            lang_id=lang_ids_exp
-        )
-        
+        # 4. Encode reference FIRST (needed for text encoding)
         reference_encoding = text_to_latent.encode_reference(
             ref_compressed,
             reference_mask_exp
         )
         
-        # 5. Flow-matching loss
+        # 5. Encode text WITH reference conditioning
+        text_encoding = text_to_latent.encode_text(
+            text_ids_exp,
+            reference_encoding,  # ref_vectors from reference encoder
+            text_mask_exp,
+            lang_id=lang_ids_exp
+        )
+        
+        # 6. Flow-matching loss
         losses = loss_fn(
             model=text_to_latent.vector_field,
             z1=target_exp,
@@ -299,9 +301,9 @@ def validate(
         ref_latent = latent_encoder(reference_mel)
         ref_compressed = compress_latents(ref_latent, compression_factor=6)
         
-        # Encode conditioning
-        text_encoding = text_to_latent.encode_text(text_ids, text_mask)
+        # Encode conditioning - reference FIRST
         reference_encoding = text_to_latent.encode_reference(ref_compressed)
+        text_encoding = text_to_latent.encode_text(text_ids, reference_encoding, text_mask)
         
         # Flow-matching loss
         losses = loss_fn(

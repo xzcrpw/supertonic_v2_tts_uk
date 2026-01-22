@@ -26,8 +26,8 @@ from omegaconf import OmegaConf
 sys.path.insert(0, str(Path(__file__).parent))
 
 from supertonic.models.transfer_vocos import create_transfer_learning_adapter
-from supertonic.data.dataset import TTSDataset
-from supertonic.data.collate import tts_collate_fn
+from supertonic.data.dataset import AutoencoderDataset
+from supertonic.data.preprocessing import AudioProcessor
 
 
 def train_step(
@@ -163,7 +163,11 @@ def main(args):
         weight_decay=config.train.optimizer.weight_decay
     )
     
-    scaler = GradScaler(enabled=config.train.amp.enabled)
+    try:
+        scaler = GradScaler("cuda", enabled=config.train.amp.enabled)
+    except TypeError:
+        # Fallback for older PyTorch
+        scaler = GradScaler(enabled=config.train.amp.enabled)
     
     # Resume
     start_iteration = 0
@@ -180,20 +184,31 @@ def main(args):
     print("Loading Dataset...")
     print("="*60)
     
-    train_dataset = TTSDataset(
-        audio_dir=config.data.train_dir,
-        cache_dir=config.data.cache_dir,
-        min_duration=config.data.min_audio_duration,
-        max_duration=config.data.max_audio_duration,
-        sample_rate=44100
+    from supertonic.models.speech_autoencoder import AutoencoderDataset
+    from supertonic.data.preprocessing import AudioProcessor
+    
+    audio_processor = AudioProcessor(
+        sample_rate=44100,
+        n_mels=228,
+        hop_length=512,
+        win_length=2048,
+        n_fft=2048
     )
     
-    val_dataset = TTSDataset(
-        audio_dir=config.data.val_dir,
-        cache_dir=config.data.cache_dir,
+    train_dataset = AutoencoderDataset(
+        manifest_path=config.data.train_manifest,
+        audio_processor=audio_processor,
         min_duration=config.data.min_audio_duration,
         max_duration=config.data.max_audio_duration,
-        sample_rate=44100
+        segment_length=176400  # 4 sec at 44.1kHz
+    )
+    
+    val_dataset = AutoencoderDataset(
+        manifest_path=config.data.val_manifest,
+        audio_processor=audio_processor,
+        min_duration=config.data.min_audio_duration,
+        max_duration=config.data.max_audio_duration,
+        segment_length=176400
     )
     
     train_loader = DataLoader(
@@ -202,7 +217,6 @@ def main(args):
         shuffle=True,
         num_workers=4,
         pin_memory=True,
-        collate_fn=tts_collate_fn,
         drop_last=True
     )
     
@@ -210,8 +224,7 @@ def main(args):
         val_dataset,
         batch_size=config.train.batch_size,
         shuffle=False,
-        num_workers=4,
-        collate_fn=tts_collate_fn
+        num_workers=4
     )
     
     print(f"Train samples: {len(train_dataset)}")

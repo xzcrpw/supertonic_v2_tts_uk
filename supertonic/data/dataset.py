@@ -40,6 +40,7 @@ class AutoencoderDataset(Dataset):
         min_duration: Minimum audio duration in seconds
         return_mel: Return mel spectrogram instead of raw audio
         segment_length: Fixed segment length in samples (for memory efficiency!)
+        data_dir: Base directory for audio paths (if paths in manifest are relative)
     """
     
     def __init__(
@@ -50,7 +51,8 @@ class AutoencoderDataset(Dataset):
         min_duration: float = 0.5,
         return_mel: bool = False,
         cache_audio: bool = False,
-        segment_length: Optional[int] = None  # e.g., 176400 for 4 seconds at 44.1kHz
+        segment_length: Optional[int] = None,  # e.g., 176400 for 4 seconds at 44.1kHz
+        data_dir: Optional[Union[str, Path]] = None  # Base directory for relative paths
     ):
         self.manifest_path = Path(manifest_path)
         self.audio_processor = audio_processor or AudioProcessor()
@@ -59,6 +61,12 @@ class AutoencoderDataset(Dataset):
         self.return_mel = return_mel
         self.cache_audio = cache_audio
         self.segment_length = segment_length  # Critical for OOM prevention!
+        
+        # Data directory - use manifest parent if not specified
+        if data_dir is not None:
+            self.data_dir = Path(data_dir)
+        else:
+            self.data_dir = self.manifest_path.parent.parent  # manifests/ -> data/
         
         # Load manifest
         self.samples = self._load_manifest()
@@ -87,11 +95,16 @@ class AutoencoderDataset(Dataset):
         sample = self.samples[idx]
         audio_path = sample["audio_path"]
         
+        # Resolve full path if relative
+        full_path = Path(audio_path)
+        if not full_path.is_absolute():
+            full_path = self.data_dir / audio_path
+        
         # Check cache
         if self._cache is not None and audio_path in self._cache:
             audio = self._cache[audio_path]
         else:
-            audio = self.audio_processor.load(audio_path)
+            audio = self.audio_processor.load(str(full_path))
             if self._cache is not None:
                 self._cache[audio_path] = audio
         

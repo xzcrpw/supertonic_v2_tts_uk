@@ -195,7 +195,7 @@ optimization:
 
 # ========== PATHS ==========
 paths:
-  data_dir: data/processed
+  data_dir: data
   manifest_train: data/manifests/train.json
   manifest_val: data/manifests/val.json
   checkpoint_dir: checkpoints

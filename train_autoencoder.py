@@ -326,6 +326,11 @@ def main(args):
     if is_main:
         print(f"Using segment_length: {segment_length} samples ({segment_length/config.audio.sample_rate:.1f} sec)")
     
+    # Get data directory (for resolving relative paths in manifest)
+    data_dir = config.paths.get("data_dir", "data")
+    if is_main:
+        print(f"Data directory: {data_dir}")
+    
     # Dataset with segment cropping
     train_dataset = AutoencoderDataset(
         manifest_path=config.data.train_manifest,
@@ -333,7 +338,8 @@ def main(args):
         max_duration=config.data.max_audio_duration,
         min_duration=config.data.min_audio_duration,
         return_mel=True,
-        segment_length=segment_length  # Random crop for memory efficiency
+        segment_length=segment_length,  # Random crop for memory efficiency
+        data_dir=data_dir
     )
     
     val_dataset = AutoencoderDataset(
@@ -342,7 +348,8 @@ def main(args):
         max_duration=config.data.max_audio_duration,
         min_duration=config.data.min_audio_duration,
         return_mel=True,
-        segment_length=segment_length
+        segment_length=segment_length,
+        data_dir=data_dir
     )
     
     # DataLoader

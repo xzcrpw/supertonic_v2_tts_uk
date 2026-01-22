@@ -420,6 +420,7 @@ def main(args):
     # Loss
     loss_fn = AutoencoderLoss(
         lambda_recon=config.train_autoencoder.loss_weights.reconstruction,
+        lambda_wave=config.train_autoencoder.loss_weights.get("waveform", 10.0),  # NEW
         lambda_adv=config.train_autoencoder.loss_weights.adversarial,
         lambda_fm=config.train_autoencoder.loss_weights.feature_matching
     )

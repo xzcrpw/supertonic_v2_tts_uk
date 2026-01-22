@@ -342,15 +342,17 @@ class AutoencoderLoss(nn.Module):
     """
     Повний loss для Speech Autoencoder training.
     
-    L_total = λ_recon × L_recon + λ_adv × L_adv + λ_fm × L_fm
+    L_total = λ_recon × L_recon + λ_wave × L_wave + λ_adv × L_adv + λ_fm × L_fm
     
     Default weights (з paper):
     - λ_recon = 45
+    - λ_wave = 10 (NEW - for low frequency preservation)
     - λ_adv = 1
     - λ_fm = 0.1
     
     Args:
         lambda_recon: Reconstruction loss weight
+        lambda_wave: Waveform L1 loss weight (helps preserve low frequencies)
         lambda_adv: Adversarial loss weight
         lambda_fm: Feature matching loss weight
         fft_sizes: FFT sizes for multi-resolution mel
@@ -362,6 +364,7 @@ class AutoencoderLoss(nn.Module):
     def __init__(
         self,
         lambda_recon: float = 45.0,
+        lambda_wave: float = 10.0,  # NEW
         lambda_adv: float = 1.0,
         lambda_fm: float = 0.1,
         fft_sizes: List[int] = [512, 1024, 2048],
@@ -372,6 +375,7 @@ class AutoencoderLoss(nn.Module):
         super().__init__()
         
         self.lambda_recon = lambda_recon
+        self.lambda_wave = lambda_wave  # NEW
         self.lambda_adv = lambda_adv
         self.lambda_fm = lambda_fm
         
@@ -404,8 +408,16 @@ class AutoencoderLoss(nn.Module):
         Returns:
             Dict with loss components and total loss
         """
-        # Reconstruction loss
-        l_recon = self.mel_loss(real_audio, generated_audio)
+        # Match lengths
+        min_len = min(real_audio.size(-1), generated_audio.size(-1))
+        real_audio_crop = real_audio[..., :min_len]
+        generated_audio_crop = generated_audio[..., :min_len]
+        
+        # Reconstruction loss (mel)
+        l_recon = self.mel_loss(real_audio_crop, generated_audio_crop)
+        
+        # Waveform L1 loss (NEW - helps preserve low frequencies)
+        l_wave = F.l1_loss(generated_audio_crop, real_audio_crop)
         
         # Adversarial loss
         l_adv = self.gan_loss.generator_loss(disc_fake_outputs)
@@ -416,6 +428,7 @@ class AutoencoderLoss(nn.Module):
         # Total loss
         total = (
             self.lambda_recon * l_recon +
+            self.lambda_wave * l_wave +  # NEW
             self.lambda_adv * l_adv +
             self.lambda_fm * l_fm
         )
@@ -423,6 +436,7 @@ class AutoencoderLoss(nn.Module):
         return {
             "total": total,
             "reconstruction": l_recon,
+            "waveform": l_wave,  # NEW
             "adversarial": l_adv,
             "feature_matching": l_fm
         }

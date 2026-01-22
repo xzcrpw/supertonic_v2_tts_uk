@@ -196,6 +196,7 @@ train_autoencoder:
     weight_decay: 0.01
   loss_weights:
     reconstruction: 45.0
+    waveform: 10.0           # NEW - helps preserve low frequencies (fixes metallic sound)
     adversarial: 1.0
     feature_matching: 0.1
   discriminator:

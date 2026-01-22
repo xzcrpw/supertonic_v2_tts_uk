@@ -101,7 +101,8 @@ train_autoencoder:
   validation_interval: 10000
 
   loss_weights:
-    reconstruction: 45.0     # λ_recon
+    reconstruction: 45.0     # λ_recon (mel loss)
+    waveform: 10.0           # λ_wave (NEW - helps preserve low frequencies)
     adversarial: 1.0         # λ_adv
     feature_matching: 0.1    # λ_fm
 

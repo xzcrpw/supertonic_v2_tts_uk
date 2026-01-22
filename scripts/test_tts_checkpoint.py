@@ -23,35 +23,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from omegaconf import OmegaConf
 
 from supertonic.models.text_to_latent import TextToLatent
-from supertonic.models.speech_autoencoder import SpeechAutoencoder, LatentEncoder, LatentDecoder
+from supertonic.models.speech_autoencoder import SpeechAutoencoder
 from supertonic.losses.flow_matching_loss import ODESolver, decompress_latents
 from supertonic.data.tokenizer import CharacterTokenizer
 
 
 def load_autoencoder(checkpoint_path: str, config, device: torch.device):
     """Load pretrained autoencoder."""
-    # Build encoder
-    encoder = LatentEncoder(
-        input_dim=config.autoencoder.encoder.input_dim,
-        hidden_dim=config.autoencoder.encoder.hidden_dim,
-        output_dim=config.autoencoder.encoder.output_dim,
-        num_blocks=config.autoencoder.encoder.num_blocks
-    )
-    
-    # Build decoder (Vocos-style)
-    decoder = LatentDecoder(
-        input_dim=config.autoencoder.decoder.input_dim,
-        hidden_dim=config.autoencoder.decoder.hidden_dim,
-        num_blocks=config.autoencoder.decoder.num_blocks,
-        kernel_size=config.autoencoder.decoder.kernel_size,
-        dilations=list(config.autoencoder.decoder.dilations),
+    # Build autoencoder with config params
+    autoencoder = SpeechAutoencoder(
+        sample_rate=config.audio.sample_rate,
         n_fft=2048,
         hop_length=512,
-        causal=config.autoencoder.decoder.causal
+        n_mels=config.autoencoder.encoder.input_dim,
+        latent_dim=config.autoencoder.encoder.output_dim,
+        hidden_dim=config.autoencoder.encoder.hidden_dim,
+        num_encoder_blocks=config.autoencoder.encoder.num_blocks,
+        num_decoder_blocks=config.autoencoder.decoder.num_blocks,
+        decoder_dilations=list(config.autoencoder.decoder.dilations)
     )
-    
-    # Build full autoencoder
-    autoencoder = SpeechAutoencoder(encoder, decoder)
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)

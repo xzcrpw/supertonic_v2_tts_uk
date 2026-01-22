@@ -228,7 +228,19 @@ def download_opentts(
     print(f"\n   Voices: {[v[1] for v in selected]}")
     
     manifest_entries = []
-    audio_dir = output_dir / "audio" / "opentts"
+    
+    # Support both old structure (opentts/audio/) and new (audio/opentts/)
+    old_audio_dir = output_dir / "opentts" / "audio"
+    new_audio_dir = output_dir / "audio" / "opentts"
+    
+    # Use old structure if it exists, otherwise use new
+    if old_audio_dir.exists():
+        audio_dir = old_audio_dir
+        print(f"   📂 Using existing structure: opentts/audio/")
+    else:
+        audio_dir = new_audio_dir
+        print(f"   📂 Using structure: audio/opentts/")
+    
     audio_dir.mkdir(parents=True, exist_ok=True)
     
     for repo_id, voice_name, size_mb, rows, license_type in selected:
@@ -239,21 +251,51 @@ def download_opentts(
         
         if is_complete:
             print(f"\n   ✅ {voice_name}: Already downloaded ({existing_count} files)")
-            # Load existing entries from files
-            for wav_file in voice_dir.glob("*.wav"):
-                try:
-                    info = torchaudio.info(str(wav_file))
-                    duration = info.num_frames / info.sample_rate
-                    manifest_entries.append({
-                        "audio_path": str(wav_file.relative_to(output_dir)),
-                        "text": "",  # Will need to reload from dataset if needed
-                        "speaker_id": voice_name,
-                        "duration": round(duration, 3),
-                        "sample_rate": target_sr,
-                        "source": "opentts",
-                    })
-                except:
-                    pass
+            print(f"      Loading texts from HuggingFace...")
+            
+            # Load dataset to get texts (streaming to avoid re-downloading audio)
+            try:
+                ds = load_dataset(repo_id, split="train")
+                text_map = {}
+                for idx, item in enumerate(ds):
+                    filename = f"{voice_name}_{idx:06d}.wav"
+                    text = item.get("text", item.get("sentence", ""))
+                    text_map[filename] = text
+                
+                # Match files with texts
+                for wav_file in sorted(voice_dir.glob("*.wav")):
+                    try:
+                        info = torchaudio.info(str(wav_file))
+                        duration = info.num_frames / info.sample_rate
+                        text = text_map.get(wav_file.name, "")
+                        manifest_entries.append({
+                            "audio_path": str(wav_file.relative_to(output_dir)),
+                            "text": text,
+                            "speaker_id": voice_name,
+                            "duration": round(duration, 3),
+                            "sample_rate": target_sr,
+                            "source": "opentts",
+                        })
+                    except:
+                        pass
+                print(f"      ✅ Loaded {len(text_map)} texts")
+            except Exception as e:
+                print(f"      ⚠️ Could not load texts: {e}")
+                # Fallback - add entries without text
+                for wav_file in sorted(voice_dir.glob("*.wav")):
+                    try:
+                        info = torchaudio.info(str(wav_file))
+                        duration = info.num_frames / info.sample_rate
+                        manifest_entries.append({
+                            "audio_path": str(wav_file.relative_to(output_dir)),
+                            "text": "",
+                            "speaker_id": voice_name,
+                            "duration": round(duration, 3),
+                            "sample_rate": target_sr,
+                            "source": "opentts",
+                        })
+                    except:
+                        pass
             continue
         
         print(f"\n   📥 {voice_name} ({size_mb} MB, {rows} samples, {license_type})")

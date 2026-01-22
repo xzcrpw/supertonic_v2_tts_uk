@@ -216,9 +216,10 @@ def train_step(
             ref_compressed = compress_latents(ref_latent, compression_factor=6)
         
         # 4. Encode reference FIRST (needed for text encoding)
+        # Note: ref_mask is not used as reference encoder outputs fixed 50 vectors
         reference_encoding = text_to_latent.encode_reference(
             ref_compressed,
-            reference_mask_exp
+            ref_mask=None  # Skip mask - encoder produces fixed output anyway
         )
         
         # 5. Encode text WITH reference conditioning

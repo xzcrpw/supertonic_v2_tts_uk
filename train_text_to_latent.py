@@ -430,14 +430,17 @@ def main(args):
     
     # Text-to-Latent model
     text_to_latent = TextToLatent(
+        latent_dim=144,  # Compressed: 24 * 6
         vocab_size=tokenizer.vocab_size,
         text_embed_dim=config.text_to_latent.text_encoder.embed_dim,
         text_hidden_dim=config.text_to_latent.text_encoder.hidden_dim,
-        ref_input_dim=config.text_to_latent.reference_encoder.input_dim,
         ref_hidden_dim=config.text_to_latent.reference_encoder.hidden_dim,
         vf_hidden_dim=config.text_to_latent.vector_field.hidden_dim,
         num_ref_vectors=config.text_to_latent.reference_encoder.num_output_vectors,
-        gamma=config.larope.gamma
+        gamma=config.larope.gamma,
+        sigma_min=config.flow_matching.sigma_min,
+        p_uncond=config.flow_matching.p_uncond,
+        cfg_scale=config.flow_matching.cfg_scale
     ).to(device)
     
     # DDP wrapping

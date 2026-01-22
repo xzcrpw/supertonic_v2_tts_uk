@@ -38,14 +38,16 @@ def load_autoencoder(checkpoint_path: str, config, device: torch.device):
         num_blocks=config.autoencoder.encoder.num_blocks
     )
     
-    # Build decoder (Vocos)
+    # Build decoder (Vocos-style)
     decoder = LatentDecoder(
-        latent_dim=config.autoencoder.decoder.latent_dim,
+        input_dim=config.autoencoder.decoder.input_dim,
         hidden_dim=config.autoencoder.decoder.hidden_dim,
-        num_layers=config.autoencoder.decoder.num_layers,
-        n_fft=config.autoencoder.decoder.n_fft,
-        hop_length=config.autoencoder.decoder.hop_length,
-        sample_rate=config.audio.sample_rate
+        num_blocks=config.autoencoder.decoder.num_blocks,
+        kernel_size=config.autoencoder.decoder.kernel_size,
+        dilations=list(config.autoencoder.decoder.dilations),
+        n_fft=2048,
+        hop_length=512,
+        causal=config.autoencoder.decoder.causal
     )
     
     # Build full autoencoder

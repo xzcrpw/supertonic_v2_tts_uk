@@ -26,7 +26,7 @@ def test_reconstruction(checkpoint_path: str, audio_path: str = None, output_dir
     
     # Load checkpoint
     print(f"\nLoading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Get config from checkpoint
     config = checkpoint.get("config", {})

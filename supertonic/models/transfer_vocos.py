@@ -178,17 +178,6 @@ def create_transfer_learning_adapter(
             super().__init__()
             self.adapter = adapter
             self.vocos = vocos
-            
-            # Create mel transform once
-            import torchaudio.transforms as T
-            self.mel_transform = T.MelSpectrogram(
-                sample_rate=24000,
-                n_fft=2048,
-                hop_length=512,
-                n_mels=228,
-                f_min=0,
-                f_max=12000
-            )
         
         def encode(self, audio: torch.Tensor) -> torch.Tensor:
             """Audio → Mel(228) → Features(100)"""
@@ -209,11 +198,20 @@ def create_transfer_learning_adapter(
         
         def _extract_mel_228(self, audio: torch.Tensor) -> torch.Tensor:
             """Extract 228-band mel як у оригінальному encoder."""
-            if self.mel_transform.device != audio.device:
-                self.mel_transform = self.mel_transform.to(audio.device)
+            import torchaudio.transforms as T
             
-            mel = self.mel_transform(audio)
-            mel = torch.log(torch.clamp(mel, min=1e-5))
+            mel_transform = T.MelSpectrogram(
+                sample_rate=24000,
+                n_fft=2048,
+                hop_length=512,
+                n_mels=228,
+                f_min=0,
+                f_max=12000
+            ).to(audio.device)
+            
+            with torch.no_grad():
+                mel = mel_transform(audio)
+                mel = torch.log(torch.clamp(mel, min=1e-5))
             return mel
     
     model = TransferLearningAutoencoder(adapter, vocos).to(device)

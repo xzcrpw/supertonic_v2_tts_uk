@@ -230,7 +230,7 @@ def main(args):
         audio_processor=audio_processor,
         min_duration=config.data.min_audio_duration,
         max_duration=config.data.max_audio_duration,
-        segment_length=None  # Variable length, handled by collate_fn
+        segment_length=132300  # 3 sec at 44.1kHz
     )
     
     val_dataset = AutoencoderDataset(
@@ -238,7 +238,7 @@ def main(args):
         audio_processor=audio_processor,
         min_duration=config.data.min_audio_duration,
         max_duration=config.data.max_audio_duration,
-        segment_length=None
+        segment_length=132300
     )
     
     train_loader = DataLoader(

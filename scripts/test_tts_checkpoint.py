@@ -46,7 +46,16 @@ def load_autoencoder(checkpoint_path: str, config, device: torch.device):
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
-    if "autoencoder" in checkpoint:
+    # Checkpoint stores encoder/decoder separately
+    if "encoder" in checkpoint:
+        autoencoder.encoder.load_state_dict(checkpoint["encoder"])
+        autoencoder.decoder.load_state_dict(checkpoint["decoder"])
+        if "mpd" in checkpoint:
+            autoencoder.mpd.load_state_dict(checkpoint["mpd"])
+        if "mrd" in checkpoint:
+            autoencoder.mrd.load_state_dict(checkpoint["mrd"])
+        print(f"Loaded from iteration {checkpoint.get('iteration', 'unknown')}")
+    elif "autoencoder" in checkpoint:
         autoencoder.load_state_dict(checkpoint["autoencoder"])
     elif "model" in checkpoint:
         autoencoder.load_state_dict(checkpoint["model"])

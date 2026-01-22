@@ -39,6 +39,51 @@ model:
     kernel_size: 3
     dropout: 0.1
 
+# ====== TEXT-TO-LATENT MODULE ======
+text_to_latent:
+  reference_encoder:
+    input_dim: 144           # Compressed latent (24 * 6)
+    hidden_dim: 128
+    num_convnext_blocks: 6
+    num_cross_attn_layers: 2
+    num_output_vectors: 50
+    kernel_size: 5
+    intermediate_mult: 4
+
+  text_encoder:
+    vocab_size: 512
+    embed_dim: 128
+    hidden_dim: 512
+    num_convnext_blocks: 6
+    num_self_attn_blocks: 4
+    num_cross_attn_layers: 2
+    num_heads: 4
+    kernel_size: 5
+
+  vector_field:
+    hidden_dim: 512
+    num_blocks: 8
+    kernel_size: 7
+    dilations: [1, 2, 4, 8, 1, 2, 4, 8]
+    num_heads: 4
+
+# ====== LAROPE CONFIGURATION ======
+larope:
+  gamma: 10
+  base: 10000
+
+# ====== FLOW MATCHING ======
+flow_matching:
+  sigma_min: 1.0e-8
+  p_uncond: 0.05
+  cfg_scale: 3.0
+  nfe: 32
+
+# ====== LANGUAGES ======
+languages:
+  supported: ["uk"]
+  embedding_dim: 4
+
 # Training settings - OPTIMAL balance
 training:
   # 6 seconds - sweet spot for quality/speed
@@ -156,6 +201,38 @@ train_autoencoder:
   discriminator:
     mpd_periods: [2, 3, 5, 7, 11]
     mrd_fft_sizes: [512, 1024, 2048]
+
+# ====== TRAINING: TEXT-TO-LATENT ======
+train_tts:
+  batch_size: 64             # RTX 6000 96GB can handle this
+  expansion_factor: 4        # Ke - context-sharing
+  effective_batch: 256       # batch_size × expansion_factor
+  learning_rate: 5.0e-4
+  total_iterations: 700000
+  lr_halve_interval: 300000
+  checkpoint_interval: 10000
+  validation_interval: 2000
+
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+  amp:
+    enabled: true
+    dtype: "bfloat16"
+
+# ====== TRAINING: DURATION PREDICTOR ======
+train_duration:
+  batch_size: 128
+  learning_rate: 5.0e-4
+  total_iterations: 3000
+  checkpoint_interval: 1000
+
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
 
 # Model Architecture Configuration
 autoencoder:

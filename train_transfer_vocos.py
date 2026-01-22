@@ -125,7 +125,7 @@ def validate(
     device: torch.device,
     max_samples: int = 50
 ):
-    """Validation."""
+    """Validation using feature matching (same as training)."""
     model.eval()
     
     total_loss = 0.0
@@ -135,11 +135,19 @@ def validate(
         if num_batches >= max_samples:
             break
         
-        audio = batch["audio"].to(device)
-        audio = torchaudio.functional.resample(audio, 44100, 24000)
+        audio = batch["audio"].to(device, non_blocking=True)
+        # Audio already resampled to 24kHz in collate_fn
         
-        recon_audio = model(audio)
-        loss = F.l1_loss(recon_audio, audio)
+        # Feature matching (same as training)
+        features = model.encode(audio)
+        target_features = model.vocos.feature_extractor(audio)
+        
+        # Match lengths
+        min_len = min(features.shape[-1], target_features.shape[-1])
+        features = features[..., :min_len]
+        target_features = target_features[..., :min_len]
+        
+        loss = F.l1_loss(features, target_features)
         
         total_loss += loss.item()
         num_batches += 1

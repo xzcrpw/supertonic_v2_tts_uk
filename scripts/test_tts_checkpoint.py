@@ -70,12 +70,29 @@ def load_autoencoder(checkpoint_path: str, config, device: torch.device):
 
 def load_tts(checkpoint_path: str, config, device: torch.device):
     """Load Text-to-Latent model."""
+    # Load checkpoint first to get actual vocab size
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Get actual vocab size from checkpoint
+    if "model" in checkpoint:
+        state_dict = checkpoint["model"]
+    else:
+        state_dict = checkpoint
+    
+    # Extract vocab size from embedding weight shape
+    embed_weight = state_dict.get("text_encoder.char_embed.embedding.weight")
+    if embed_weight is not None:
+        actual_vocab_size = embed_weight.shape[0]
+        print(f"Detected vocab_size from checkpoint: {actual_vocab_size}")
+    else:
+        actual_vocab_size = config.text_to_latent.text_encoder.vocab_size
+    
     # Use actual config structure
     ttl_cfg = config.text_to_latent
     
     text_to_latent = TextToLatent(
         latent_dim=ttl_cfg.reference_encoder.input_dim,  # 144 (compressed)
-        vocab_size=ttl_cfg.text_encoder.vocab_size,
+        vocab_size=actual_vocab_size,  # From checkpoint!
         text_embed_dim=ttl_cfg.text_encoder.embed_dim,
         text_hidden_dim=ttl_cfg.text_encoder.hidden_dim,
         ref_hidden_dim=ttl_cfg.reference_encoder.hidden_dim,
@@ -87,13 +104,8 @@ def load_tts(checkpoint_path: str, config, device: torch.device):
         gamma=config.larope.gamma
     )
     
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    
-    if "model" in checkpoint:
-        text_to_latent.load_state_dict(checkpoint["model"])
-        print(f"Loaded TTS from iteration {checkpoint.get('iteration', 'unknown')}")
-    else:
-        text_to_latent.load_state_dict(checkpoint)
+    text_to_latent.load_state_dict(state_dict)
+    print(f"Loaded TTS from iteration {checkpoint.get('iteration', 'unknown')}")
     
     text_to_latent.to(device)
     text_to_latent.eval()

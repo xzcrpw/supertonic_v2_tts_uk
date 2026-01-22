@@ -25,7 +25,7 @@ from omegaconf import OmegaConf
 from supertonic.models.text_to_latent import TextToLatent
 from supertonic.models.speech_autoencoder import SpeechAutoencoder, LatentEncoder, LatentDecoder
 from supertonic.losses.flow_matching_loss import ODESolver, decompress_latents
-from supertonic.data.text_processor import TextProcessor
+from supertonic.data.tokenizer import CharacterTokenizer
 
 
 def load_autoencoder(checkpoint_path: str, config, device: torch.device):
@@ -100,7 +100,7 @@ def synthesize(
     text: str,
     text_to_latent: TextToLatent,
     autoencoder: SpeechAutoencoder,
-    text_processor: TextProcessor,
+    tokenizer: CharacterTokenizer,
     reference_audio: torch.Tensor = None,
     device: torch.device = torch.device("cuda"),
     num_steps: int = 32,
@@ -114,7 +114,7 @@ def synthesize(
         text: Input text
         text_to_latent: TTS model
         autoencoder: Autoencoder for decoding
-        text_processor: Text tokenizer
+        tokenizer: Character tokenizer
         reference_audio: Optional reference audio for voice cloning
         device: Device
         num_steps: ODE solver steps
@@ -125,8 +125,8 @@ def synthesize(
         Synthesized audio waveform
     """
     # Tokenize text
-    text_ids = text_processor.encode(text)
-    text_ids = torch.tensor(text_ids, dtype=torch.long, device=device).unsqueeze(0)
+    text_ids = tokenizer.encode(text, return_tensor=True)
+    text_ids = text_ids.to(device).unsqueeze(0)
     
     # Estimate duration if not provided
     if duration_seconds is None:
@@ -225,10 +225,8 @@ def main():
     print(f"Loading TTS from {args.tts_checkpoint}...")
     text_to_latent = load_tts(args.tts_checkpoint, config, device)
     
-    # Load text processor
-    text_processor = TextProcessor(
-        vocab_path=config.data.vocab_path if hasattr(config.data, 'vocab_path') else None
-    )
+    # Create tokenizer
+    tokenizer = CharacterTokenizer(languages=["uk", "en"])
     
     # Load reference audio if provided
     reference_audio = None
@@ -247,7 +245,7 @@ def main():
         text=args.text,
         text_to_latent=text_to_latent,
         autoencoder=autoencoder,
-        text_processor=text_processor,
+        tokenizer=tokenizer,
         reference_audio=reference_audio,
         device=device,
         num_steps=args.num_steps,

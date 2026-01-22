@@ -21,9 +21,8 @@ vocos:
 
 # Dataset
 data:
-  train_dir: "data/processed/audio"
-  val_dir: "data/processed/audio"
-  cache_dir: "data/cache"
+  train_manifest: "data/manifests/train.json"
+  val_manifest: "data/manifests/val.json"
   min_audio_duration: 0.5
   max_audio_duration: 15.0
 

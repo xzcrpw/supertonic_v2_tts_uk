@@ -70,16 +70,20 @@ def load_autoencoder(checkpoint_path: str, config, device: torch.device):
 
 def load_tts(checkpoint_path: str, config, device: torch.device):
     """Load Text-to-Latent model."""
+    # Use actual config structure
+    ttl_cfg = config.text_to_latent
+    
     text_to_latent = TextToLatent(
-        vocab_size=config.text_to_latent.vocab_size,
-        text_dim=config.text_to_latent.text_dim,
-        ref_dim=config.text_to_latent.ref_dim,
-        latent_dim=config.text_to_latent.latent_dim,
-        num_languages=config.text_to_latent.num_languages,
-        text_encoder_layers=config.text_to_latent.text_encoder_layers,
-        ref_encoder_layers=config.text_to_latent.ref_encoder_layers,
-        vf_hidden_dim=config.text_to_latent.vf_hidden_dim,
-        vf_num_blocks=config.text_to_latent.vf_num_blocks,
+        latent_dim=ttl_cfg.reference_encoder.input_dim,  # 144 (compressed)
+        vocab_size=ttl_cfg.text_encoder.vocab_size,
+        text_embed_dim=ttl_cfg.text_encoder.embed_dim,
+        text_hidden_dim=ttl_cfg.text_encoder.hidden_dim,
+        ref_hidden_dim=ttl_cfg.reference_encoder.hidden_dim,
+        vf_hidden_dim=ttl_cfg.vector_field.hidden_dim,
+        num_ref_vectors=ttl_cfg.reference_encoder.num_output_vectors,
+        sigma_min=config.flow_matching.sigma_min,
+        p_uncond=config.flow_matching.p_uncond,
+        cfg_scale=config.flow_matching.cfg_scale,
         gamma=config.larope.gamma
     )
     
@@ -87,6 +91,7 @@ def load_tts(checkpoint_path: str, config, device: torch.device):
     
     if "model" in checkpoint:
         text_to_latent.load_state_dict(checkpoint["model"])
+        print(f"Loaded TTS from iteration {checkpoint.get('iteration', 'unknown')}")
     else:
         text_to_latent.load_state_dict(checkpoint)
     
@@ -145,7 +150,7 @@ def synthesize(
     # Get reference encoding
     if reference_audio is not None:
         # Encode reference audio
-        mel = autoencoder.encoder.compute_mel(reference_audio)
+        mel = autoencoder.mel_spec(reference_audio)
         ref_latents = autoencoder.encoder(mel)
         
         # Compress reference
@@ -154,10 +159,10 @@ def synthesize(
         
         # Encode reference
         reference_encoding = text_to_latent.encode_reference(ref_compressed)
-        z_ref = ref_compressed[:, :, :50]  # First 50 frames as reference
+        z_ref = ref_compressed[:, :, :compressed_len]  # Match output length
     else:
-        # Use zeros for unconditional generation
-        reference_encoding = torch.zeros(1, 50, 512, device=device)
+        # Use learnable unconditional embeddings
+        reference_encoding = text_to_latent.uncond_ref.expand(1, -1, -1)
         z_ref = torch.zeros(1, 144, compressed_len, device=device)
     
     # Encode text with reference

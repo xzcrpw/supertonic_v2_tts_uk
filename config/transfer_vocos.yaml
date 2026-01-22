@@ -28,12 +28,12 @@ data:
 
 # Training (швидше бо тренуємо тільки adapter)
 train:
-  batch_size: 4096
+  batch_size: 1024
   gradient_accumulation_steps: 1
-  learning_rate: 0.002     # Більший batch = більший LR
-  total_iterations: 1000   # batch 4096 x 1000 = 4M samples
-  checkpoint_interval: 200  # Save every 200 iterations
-  validation_interval: 100  # Validate every 100
+  learning_rate: 0.001     # Оптимальний LR
+  total_iterations: 2000   # batch 1024 x 2000 = 2M samples
+  checkpoint_interval: 400  # Save every 400
+  validation_interval: 200
   
   amp:
     enabled: true

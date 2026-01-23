@@ -34,6 +34,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from omegaconf import OmegaConf
 
+from supertonic.data.preprocessing import AudioProcessor
+
 # Optional quality metrics
 try:
     from pesq import pesq
@@ -190,20 +192,17 @@ def compute_mel(audio: torch.Tensor,
                 n_fft: int = 1024,
                 hop_length: int = 256,
                 n_mels: int = 100) -> torch.Tensor:
-    """Compute mel spectrogram."""
-    mel_transform = torchaudio.transforms.MelSpectrogram(
+    """Compute mel spectrogram using AudioProcessor (same as training!)."""
+    audio_processor = AudioProcessor(
         sample_rate=sample_rate,
         n_fft=n_fft,
         hop_length=hop_length,
         n_mels=n_mels,
-        f_min=20.0,
-        f_max=sample_rate // 2,
+        fmin=0.0,
+        fmax=sample_rate / 2
     )
     
-    mel = mel_transform(audio)
-    mel = torch.log(mel.clamp(min=1e-5))
-    
-    return mel
+    return audio_processor.compute_mel(audio, log_scale=True)
 
 
 def reconstruct_audio(encoder, decoder, audio: torch.Tensor, 

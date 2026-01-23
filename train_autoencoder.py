@@ -331,7 +331,11 @@ def main(args):
     if is_main:
         print(f"Data directory: {data_dir}")
     
-    # Dataset with segment cropping
+    # Dataset with segment cropping and RAM caching
+    cache_audio = config.train_autoencoder.get("cache_audio", False)
+    if is_main:
+        print(f"Audio caching in RAM: {cache_audio}")
+    
     train_dataset = AutoencoderDataset(
         manifest_path=config.data.train_manifest,
         audio_processor=audio_processor,
@@ -339,7 +343,8 @@ def main(args):
         min_duration=config.data.min_audio_duration,
         return_mel=True,
         segment_length=segment_length,  # Random crop for memory efficiency
-        data_dir=data_dir
+        data_dir=data_dir,
+        cache_audio=cache_audio  # Cache all audio in RAM!
     )
     
     val_dataset = AutoencoderDataset(
@@ -349,7 +354,8 @@ def main(args):
         min_duration=config.data.min_audio_duration,
         return_mel=True,
         segment_length=segment_length,
-        data_dir=data_dir
+        data_dir=data_dir,
+        cache_audio=cache_audio  # Cache all audio in RAM!
     )
     
     # DataLoader
@@ -362,8 +368,11 @@ def main(args):
         train_sampler = None
         shuffle = True
     
-    # Get num_workers from config (default 4 for compatibility)
-    num_workers = config.training.autoencoder.get("num_workers", 4)
+    # Get num_workers from config (try train_autoencoder first, then training.autoencoder)
+    num_workers = config.train_autoencoder.get("num_workers", 
+                    config.training.autoencoder.get("num_workers", 4))
+    if is_main:
+        print(f"DataLoader num_workers: {num_workers}")
     
     train_loader = DataLoader(
         train_dataset,
@@ -373,7 +382,9 @@ def main(args):
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=autoencoder_collate_fn,
-        drop_last=True
+        drop_last=True,
+        persistent_workers=num_workers > 0,  # Keep workers alive between epochs
+        prefetch_factor=4 if num_workers > 0 else None  # Prefetch more batches
     )
     
     val_loader = DataLoader(
@@ -382,7 +393,8 @@ def main(args):
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
-        collate_fn=autoencoder_collate_fn
+        collate_fn=autoencoder_collate_fn,
+        persistent_workers=num_workers > 0
     )
     
     # Models

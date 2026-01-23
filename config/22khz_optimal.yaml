@@ -110,7 +110,7 @@ languages:
 # ========== TRAINING: AUTOENCODER (Stage 1) ==========
 train_autoencoder:
   # Batch & segment settings
-  batch_size: 32              # Sweet spot for 96GB with 22kHz
+  batch_size: 64              # Doubled! 98GB VRAM allows it
   segment_length: 132300      # 6 seconds at 22050Hz
   gradient_accumulation_steps: 1
   
@@ -123,8 +123,8 @@ train_autoencoder:
   # Schedule
   total_iterations: 200000    # Faster convergence with 22kHz
   warmup_steps: 5000
-  checkpoint_interval: 10000
-  validation_interval: 5000
+  checkpoint_interval: 5000   # Every 5k iterations (~1-2 hours)
+  validation_interval: 2500
   log_interval: 100
   
   # Loss weights (CRITICAL for quality!)

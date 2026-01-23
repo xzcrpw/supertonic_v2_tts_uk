@@ -365,7 +365,8 @@ def diagnose_full_pipeline(checkpoint_path: str, audio_path: str, output_dir: st
     original_path = output_path / "original.wav"
     
     # Normalize raw audio for listening (it might be very loud)
-    audio_raw_normalized = audio_raw[0].cpu() / (audio_raw[0].abs().max() + 1e-8)
+    audio_raw_cpu = audio_raw[0].cpu()
+    audio_raw_normalized = audio_raw_cpu / (audio_raw_cpu.abs().max() + 1e-8)
     
     torchaudio.save(str(audio_raw_path), audio_raw_normalized.unsqueeze(0), params["sample_rate"])
     torchaudio.save(str(audio_final_path), audio_final[0].cpu().unsqueeze(0), params["sample_rate"])

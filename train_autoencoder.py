@@ -408,6 +408,8 @@ def main(args):
         num_blocks=ae_config.decoder.num_blocks,
         kernel_size=ae_config.decoder.kernel_size,
         dilations=ae_config.decoder.dilations,
+        n_fft=config.audio.n_fft,              # CRITICAL: use config values!
+        hop_length=config.audio.hop_length,    # CRITICAL: use config values!
         causal=ae_config.decoder.causal,
         gradient_checkpointing=gradient_checkpointing
     ).to(device)
@@ -544,7 +546,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Speech Autoencoder")
-    parser.add_argument("--config", type=str, default="config/default.yaml",
+    parser.add_argument("--config", type=str, default="config/22khz_optimal.yaml",
                         help="Path to config file")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to checkpoint to resume from")

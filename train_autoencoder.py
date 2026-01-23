@@ -414,6 +414,16 @@ def main(args):
         gradient_checkpointing=gradient_checkpointing
     ).to(device)
     
+    if is_main:
+        print(f"=" * 60)
+        print(f"MODEL CONFIGURATION CHECK:")
+        print(f"  Encoder input_dim (n_mels): {ae_config.encoder.input_dim}")
+        print(f"  Decoder n_fft: {config.audio.n_fft}")
+        print(f"  Decoder hop_length: {config.audio.hop_length}")
+        print(f"  Audio sample_rate: {config.audio.sample_rate}")
+        print(f"  MRD fft_sizes: {list(ae_config.discriminator.mrd_fft_sizes)}")
+        print(f"=" * 60)
+    
     mpd = MultiPeriodDiscriminator(
         periods=ae_config.discriminator.mpd_periods
     ).to(device)
@@ -429,13 +439,19 @@ def main(args):
         mpd = DDP(mpd, device_ids=[local_rank])
         mrd = DDP(mrd, device_ids=[local_rank])
     
-    # Loss
+    # Loss - CRITICAL: pass sample_rate and fft_sizes from config!
     loss_fn = AutoencoderLoss(
         lambda_recon=config.train_autoencoder.loss_weights.reconstruction,
-        lambda_wave=config.train_autoencoder.loss_weights.get("waveform", 10.0),  # NEW
+        lambda_wave=config.train_autoencoder.loss_weights.get("waveform", 10.0),
         lambda_adv=config.train_autoencoder.loss_weights.adversarial,
-        lambda_fm=config.train_autoencoder.loss_weights.feature_matching
+        lambda_fm=config.train_autoencoder.loss_weights.feature_matching,
+        fft_sizes=list(ae_config.discriminator.mrd_fft_sizes),  # Use same FFT sizes as MRD
+        sample_rate=config.audio.sample_rate,                    # CRITICAL!
+        n_mels=config.audio.n_mels                               # CRITICAL!
     )
+    
+    if is_main:
+        print(f"Loss config: sample_rate={config.audio.sample_rate}, fft_sizes={list(ae_config.discriminator.mrd_fft_sizes)}, n_mels={config.audio.n_mels}")
     
     # Optimizers
     optimizer_g = torch.optim.AdamW(

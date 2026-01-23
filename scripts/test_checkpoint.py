@@ -74,6 +74,23 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
     n_mels = audio_config.get("n_mels", 100)
     sample_rate = audio_config.get("sample_rate", 22050)
     
+    # CRITICAL: Detect actual n_fft from checkpoint weights (config might be wrong due to bug)
+    # The window size in istft_head.window IS the actual n_fft used during training
+    if "decoder" in checkpoint:
+        decoder_state = checkpoint["decoder"]
+        if "istft_head.window" in decoder_state:
+            actual_n_fft = decoder_state["istft_head.window"].shape[0]
+            if actual_n_fft != n_fft:
+                print(f"   ⚠️  Config says n_fft={n_fft}, but weights have n_fft={actual_n_fft}")
+                print(f"   ⚠️  Using actual n_fft={actual_n_fft} from weights")
+                n_fft = actual_n_fft
+                # Recalculate hop_length proportionally (typical ratio)
+                if actual_n_fft == 2048:
+                    hop_length = 512
+                    sample_rate = 44100
+                    n_mels = 228
+                    print(f"   ⚠️  Detected 44.1kHz config: hop={hop_length}, sr={sample_rate}, mels={n_mels}")
+    
     print(f"   Audio config: n_fft={n_fft}, hop={hop_length}, mels={n_mels}, sr={sample_rate}")
     
     # Default architecture params
@@ -96,7 +113,11 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
         "hop_length": hop_length,
     }
     
-    # Override with config if available
+    # Override with config if available (but preserve n_fft/hop_length we detected from weights!)
+    detected_n_fft = n_fft
+    detected_hop = hop_length
+    detected_mels = n_mels
+    
     if "model" in config and "autoencoder" in config["model"]:
         ae_config = config["model"]["autoencoder"]
         if "encoder" in ae_config:
@@ -104,6 +125,11 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
         if "decoder" in ae_config:
             for k, v in ae_config["decoder"].items():
                 decoder_params[k] = v
+    
+    # Force use detected values (they come from actual weights, not buggy config)
+    encoder_params["input_dim"] = detected_mels
+    decoder_params["n_fft"] = detected_n_fft
+    decoder_params["hop_length"] = detected_hop
     
     print(f"   Decoder params: n_fft={decoder_params.get('n_fft')}, hop={decoder_params.get('hop_length')}")
     
@@ -120,6 +146,14 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
     
     step = checkpoint.get("step", 0)
     print(f"   ✅ Loaded step {step:,}")
+    
+    # Update config with detected values (for use in reconstruction)
+    config["audio"] = {
+        "n_fft": detected_n_fft,
+        "hop_length": detected_hop,
+        "n_mels": detected_mels,
+        "sample_rate": sample_rate,
+    }
     
     return encoder, decoder, step, config
 

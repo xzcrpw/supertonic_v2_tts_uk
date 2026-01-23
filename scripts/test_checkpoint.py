@@ -62,14 +62,23 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
     
     print(f"\n📦 Loading checkpoint: {checkpoint_path}")
     
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
     # Get config from checkpoint or use defaults
     config = checkpoint.get("config", {})
     
+    # Get audio params from config
+    audio_config = config.get("audio", {})
+    n_fft = audio_config.get("n_fft", 1024)
+    hop_length = audio_config.get("hop_length", 256)
+    n_mels = audio_config.get("n_mels", 100)
+    sample_rate = audio_config.get("sample_rate", 22050)
+    
+    print(f"   Audio config: n_fft={n_fft}, hop={hop_length}, mels={n_mels}, sr={sample_rate}")
+    
     # Default architecture params
     encoder_params = {
-        "input_dim": 100,
+        "input_dim": n_mels,
         "hidden_dim": 512,
         "output_dim": 24,
         "num_blocks": 10,
@@ -83,6 +92,8 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
         "kernel_size": 7,
         "dilations": [1, 2, 4, 1, 2, 4, 1, 1, 1, 1],
         "causal": True,
+        "n_fft": n_fft,
+        "hop_length": hop_length,
     }
     
     # Override with config if available
@@ -91,7 +102,10 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
         if "encoder" in ae_config:
             encoder_params.update(ae_config["encoder"])
         if "decoder" in ae_config:
-            decoder_params.update(ae_config["decoder"])
+            for k, v in ae_config["decoder"].items():
+                decoder_params[k] = v
+    
+    print(f"   Decoder params: n_fft={decoder_params.get('n_fft')}, hop={decoder_params.get('hop_length')}")
     
     # Create models
     encoder = LatentEncoder(**encoder_params).to(device)
@@ -149,11 +163,15 @@ def compute_mel(audio: torch.Tensor,
 
 def reconstruct_audio(encoder, decoder, audio: torch.Tensor, 
                       device: str = "cuda",
-                      sample_rate: int = 22050) -> torch.Tensor:
+                      sample_rate: int = 22050,
+                      n_fft: int = 1024,
+                      hop_length: int = 256,
+                      n_mels: int = 100) -> torch.Tensor:
     """Reconstruct audio through autoencoder."""
     with torch.no_grad():
         # Compute mel
-        mel = compute_mel(audio, sample_rate=sample_rate)
+        mel = compute_mel(audio, sample_rate=sample_rate, n_fft=n_fft, 
+                         hop_length=hop_length, n_mels=n_mels)
         mel = mel.unsqueeze(0).to(device)  # [1, n_mels, T]
         
         # Encode
@@ -319,7 +337,14 @@ def interactive_menu():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"   Device: {device}")
     
-    sample_rate = 22050
+    # Audio params (will be updated from checkpoint config)
+    audio_params = {
+        "sample_rate": 22050,
+        "n_fft": 1024,
+        "hop_length": 256,
+        "n_mels": 100,
+    }
+    
     encoder = None
     decoder = None
     current_step = 0
@@ -372,10 +397,23 @@ def interactive_menu():
                 else:
                     cp_path = idx
                     
-                encoder, decoder, current_step, _ = load_checkpoint(cp_path, device)
+                encoder, decoder, current_step, config = load_checkpoint(cp_path, device)
+                
+                # Update audio params from config
+                if config and "audio" in config:
+                    audio_params.update({
+                        "sample_rate": config["audio"].get("sample_rate", 22050),
+                        "n_fft": config["audio"].get("n_fft", 1024),
+                        "hop_length": config["audio"].get("hop_length", 256),
+                        "n_mels": config["audio"].get("n_mels", 100),
+                    })
+                    print(f"   📊 Audio params: {audio_params}")
+                
                 print(f"   ✅ Loaded checkpoint at step {current_step:,}")
             except Exception as e:
                 print(f"   ❌ Error: {e}")
+                import traceback
+                traceback.print_exc()
                 
         elif choice == "3":
             audio_files = list_audio_files()
@@ -398,6 +436,8 @@ def interactive_menu():
                     audio_files = list_audio_files()
                     audio_path = audio_files[int(audio_path)]
                 
+                sample_rate = audio_params["sample_rate"]
+                
                 print(f"\n   🎵 Loading: {audio_path}")
                 audio = load_audio(audio_path, target_sr=sample_rate)
                 print(f"   Duration: {len(audio)/sample_rate:.2f}s")
@@ -409,7 +449,13 @@ def interactive_menu():
                     print(f"   Truncated to {max_samples/sample_rate:.1f}s")
                 
                 print("\n   🔄 Reconstructing...")
-                reconstructed = reconstruct_audio(encoder, decoder, audio, device, sample_rate)
+                reconstructed = reconstruct_audio(
+                    encoder, decoder, audio, device, 
+                    sample_rate=audio_params["sample_rate"],
+                    n_fft=audio_params["n_fft"],
+                    hop_length=audio_params["hop_length"],
+                    n_mels=audio_params["n_mels"]
+                )
                 
                 print("\n   📊 Computing metrics...")
                 metrics = compute_metrics(audio, reconstructed, sample_rate)
@@ -483,23 +529,33 @@ def interactive_menu():
                 else:
                     audio_path = audio_idx
                 
-                # Load audio
-                audio = load_audio(audio_path, target_sr=sample_rate)
-                max_samples = sample_rate * 10
-                if len(audio) > max_samples:
-                    audio = audio[:max_samples]
-                
                 results = []
                 for idx in [idx1, idx2]:
                     cp_path = checkpoints[idx]
-                    enc, dec, step, _ = load_checkpoint(cp_path, device)
-                    recon = reconstruct_audio(enc, dec, audio, device, sample_rate)
-                    metrics = compute_metrics(audio, recon, sample_rate)
+                    enc, dec, step, config = load_checkpoint(cp_path, device)
+                    
+                    # Get audio params from this checkpoint's config
+                    ap = {
+                        "sample_rate": config.get("audio", {}).get("sample_rate", 22050),
+                        "n_fft": config.get("audio", {}).get("n_fft", 1024),
+                        "hop_length": config.get("audio", {}).get("hop_length", 256),
+                        "n_mels": config.get("audio", {}).get("n_mels", 100),
+                    }
+                    
+                    # Load audio with this checkpoint's sample rate
+                    audio = load_audio(audio_path, target_sr=ap["sample_rate"])
+                    max_samples = ap["sample_rate"] * 10
+                    if len(audio) > max_samples:
+                        audio = audio[:max_samples]
+                    
+                    recon = reconstruct_audio(enc, dec, audio, device, **ap)
+                    metrics = compute_metrics(audio, recon, ap["sample_rate"])
                     results.append({
                         "step": step,
                         "path": cp_path,
                         "metrics": metrics,
                         "reconstructed": recon,
+                        "sample_rate": ap["sample_rate"],
                     })
                 
                 print("\n   📊 Comparison:")
@@ -522,8 +578,9 @@ def interactive_menu():
                 # Save both
                 base_name = Path(audio_path).stem
                 for r in results:
+                    sr = r.get("sample_rate", 22050)
                     recon_path = output_dir / f"{base_name}_step{r['step']}_reconstructed.wav"
-                    torchaudio.save(str(recon_path), r['reconstructed'].unsqueeze(0), sample_rate)
+                    torchaudio.save(str(recon_path), r['reconstructed'].unsqueeze(0), sr)
                     print(f"\n   💾 Saved: {recon_path}")
                 
             except Exception as e:
@@ -540,6 +597,8 @@ def interactive_menu():
             n = input(f"   How many files to test? (max {len(audio_files)}): ").strip()
             n = min(int(n), len(audio_files))
             
+            sample_rate = audio_params["sample_rate"]
+            
             all_metrics = []
             for i, af in enumerate(audio_files[:n]):
                 print(f"\n   [{i+1}/{n}] {Path(af).name}")
@@ -549,7 +608,13 @@ def interactive_menu():
                     if len(audio) > max_samples:
                         audio = audio[:max_samples]
                     
-                    recon = reconstruct_audio(encoder, decoder, audio, device, sample_rate)
+                    recon = reconstruct_audio(
+                        encoder, decoder, audio, device,
+                        sample_rate=audio_params["sample_rate"],
+                        n_fft=audio_params["n_fft"],
+                        hop_length=audio_params["hop_length"],
+                        n_mels=audio_params["n_mels"]
+                    )
                     metrics = compute_metrics(audio, recon, sample_rate)
                     metrics["file"] = af
                     all_metrics.append(metrics)
@@ -603,18 +668,26 @@ def main():
     # Quick test mode
     if args.checkpoint and args.audio:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        sample_rate = 22050
         
         output_dir = Path(args.output)
         output_dir.mkdir(exist_ok=True)
         
-        encoder, decoder, step, _ = load_checkpoint(args.checkpoint, device)
+        encoder, decoder, step, config = load_checkpoint(args.checkpoint, device)
+        
+        # Get audio params from config
+        audio_params = {
+            "sample_rate": config.get("audio", {}).get("sample_rate", 22050),
+            "n_fft": config.get("audio", {}).get("n_fft", 1024),
+            "hop_length": config.get("audio", {}).get("hop_length", 256),
+            "n_mels": config.get("audio", {}).get("n_mels", 100),
+        }
+        sample_rate = audio_params["sample_rate"]
         
         print(f"\n🎵 Loading: {args.audio}")
         audio = load_audio(args.audio, target_sr=sample_rate)
         
         print("🔄 Reconstructing...")
-        reconstructed = reconstruct_audio(encoder, decoder, audio, device, sample_rate)
+        reconstructed = reconstruct_audio(encoder, decoder, audio, device, **audio_params)
         
         print("📊 Computing metrics...")
         metrics = compute_metrics(audio, reconstructed, sample_rate)

@@ -74,23 +74,34 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
     n_mels = audio_config.get("n_mels", 100)
     sample_rate = audio_config.get("sample_rate", 22050)
     
-    # CRITICAL: Detect actual n_fft from checkpoint weights (config might be wrong due to bug)
-    # The window size in istft_head.window IS the actual n_fft used during training
+    # CRITICAL: Detect actual parameters from checkpoint weights (config might be wrong due to bug)
+    
+    # Detect n_mels from encoder input_conv weight shape: [hidden, n_mels, 1]
+    if "encoder" in checkpoint:
+        encoder_state = checkpoint["encoder"]
+        if "input_conv.weight" in encoder_state:
+            actual_n_mels = encoder_state["input_conv.weight"].shape[1]
+            if actual_n_mels != n_mels:
+                print(f"   ⚠️  Config says n_mels={n_mels}, but weights have n_mels={actual_n_mels}")
+                n_mels = actual_n_mels
+    
+    # Detect n_fft from decoder istft_head.window shape
     if "decoder" in checkpoint:
         decoder_state = checkpoint["decoder"]
         if "istft_head.window" in decoder_state:
             actual_n_fft = decoder_state["istft_head.window"].shape[0]
             if actual_n_fft != n_fft:
                 print(f"   ⚠️  Config says n_fft={n_fft}, but weights have n_fft={actual_n_fft}")
-                print(f"   ⚠️  Using actual n_fft={actual_n_fft} from weights")
                 n_fft = actual_n_fft
-                # Recalculate hop_length proportionally (typical ratio)
+                # Adjust hop_length proportionally
                 if actual_n_fft == 2048:
                     hop_length = 512
                     sample_rate = 44100
-                    n_mels = 228
-                    print(f"   ⚠️  Detected 44.1kHz config: hop={hop_length}, sr={sample_rate}, mels={n_mels}")
+                elif actual_n_fft == 1024:
+                    hop_length = 256
+                    sample_rate = 22050
     
+    print(f"   ⚠️  Using detected params: n_fft={n_fft}, hop={hop_length}, mels={n_mels}, sr={sample_rate}")
     print(f"   Audio config: n_fft={n_fft}, hop={hop_length}, mels={n_mels}, sr={sample_rate}")
     
     # Default architecture params

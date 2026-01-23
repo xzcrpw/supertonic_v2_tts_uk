@@ -399,6 +399,9 @@ class LatentDecoder(nn.Module):
         # iSTFT
         x = x.transpose(1, 2)  # [B, T, hidden]
         audio = self.istft_head(x)  # [B, T_audio]
+        
+        # CRITICAL: Clamp output to prevent clipping/distortion
+        audio = torch.tanh(audio)
 
         return audio
 

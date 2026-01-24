@@ -128,15 +128,16 @@ train_autoencoder:
   log_interval: 100
   
   # NEW: Discriminator warmup - generator trains alone first
-  discriminator_start_steps: 2000  # Disc sleeps for 2000 steps, gen learns reconstruction
+  # Generator MUST learn to reconstruct loudly before D wakes up!
+  discriminator_start_steps: 5000  # INCREASED - gen needs more time to learn STFT
   
   # Loss weights (CRITICAL for quality!)
   loss_weights:
-    spectral_convergence: 2.5  # NEW - removes metallic sound
-    log_magnitude: 2.5         # NEW - phase quality
-    reconstruction: 45.0       # Multi-resolution mel L1
-    waveform: 10.0             # Waveform L1
-    adversarial: 1.0           # GAN loss
+    spectral_convergence: 2.5  # SC loss - normalized, good for shape
+    log_magnitude: 2.5         # Log Mag - PUNISHES silence! (log(0.1)=-2.3)
+    reconstruction: 45.0       # MR-STFT Mel L1 - main reconstruction loss
+    waveform: 2.0              # SMALL! L1 averages signal → mutes high freq
+    adversarial: 1.0           # GAN loss (after warmup)
     feature_matching: 0.1      # Discriminator feature matching
   
   # AMP

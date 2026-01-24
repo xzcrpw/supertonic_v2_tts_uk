@@ -150,9 +150,20 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
     encoder = LatentEncoder(**encoder_params).to(device)
     decoder = LatentDecoder(**decoder_params).to(device)
     
-    # Load weights
-    encoder.load_state_dict(checkpoint["encoder"])
-    decoder.load_state_dict(checkpoint["decoder"])
+    # Helper to strip DDP "module." prefix from state dict
+    def strip_ddp_prefix(state_dict):
+        """Remove 'module.' prefix added by DistributedDataParallel."""
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("module."):
+                new_state_dict[k[7:]] = v  # Remove "module." (7 chars)
+            else:
+                new_state_dict[k] = v
+        return new_state_dict
+    
+    # Load weights (handle DDP prefix)
+    encoder.load_state_dict(strip_ddp_prefix(checkpoint["encoder"]))
+    decoder.load_state_dict(strip_ddp_prefix(checkpoint["decoder"]))
     
     encoder.eval()
     decoder.eval()

@@ -429,20 +429,18 @@ class FeatureMatchingLoss(nn.Module):
 
 class AutoencoderLoss(nn.Module):
     """
-    Повний loss для Speech Autoencoder training.
+    Повний loss для Speech Autoencoder training (Supertonic-style).
     
-    L_total = λ_sc × L_sc + λ_mag × L_mag + λ_mel × L_mel + λ_wave × L_wave + λ_adv × L_adv + λ_fm × L_fm
+    L_total = λ_mel × L_mel + λ_adv × L_adv + λ_fm × L_fm
     
-    UPDATED: Added Spectral Convergence Loss for better phase quality!
+    NOTE: WaveNeXt head doesn't need explicit spectral losses (SC/LogMag)
+    or waveform L1 - just Mel reconstruction + GAN is enough.
     
     Args:
-        lambda_sc: Spectral Convergence loss weight (NEW - removes metallic sound)
-        lambda_mag: Log Magnitude loss weight (NEW)
-        lambda_mel: Mel L1 loss weight
-        lambda_wave: Waveform L1 loss weight
+        lambda_mel: Mel L1 loss weight (main reconstruction)
         lambda_adv: Adversarial loss weight
-        lambda_fm: Feature matching loss weight
-        fft_sizes: FFT sizes for multi-resolution
+        lambda_fm: Feature matching loss weight (increase to reduce buzz)
+        fft_sizes: FFT sizes for multi-resolution mel
         sample_rate: Audio sample rate
         n_mels: Number of mel bins
         gan_type: Type of GAN loss
@@ -450,30 +448,25 @@ class AutoencoderLoss(nn.Module):
     
     def __init__(
         self,
-        lambda_sc: float = 2.5,      # NEW - Spectral Convergence
-        lambda_mag: float = 2.5,     # NEW - Log Magnitude
-        lambda_mel: float = 45.0,    # Renamed from lambda_recon
-        lambda_wave: float = 10.0,
+        lambda_mel: float = 45.0,
         lambda_adv: float = 1.0,
-        lambda_fm: float = 0.1,
+        lambda_fm: float = 1.0,       # Increased from 0.1
         fft_sizes: List[int] = [512, 1024, 2048],
         sample_rate: int = 44100,
         n_mels: int = 80,
-        gan_type: str = "lsgan"
+        gan_type: str = "lsgan",
+        # Legacy params (ignored, kept for config compat)
+        lambda_sc: float = 0.0,
+        lambda_mag: float = 0.0,
+        lambda_wave: float = 0.0,
     ):
         super().__init__()
         
-        self.lambda_sc = lambda_sc
-        self.lambda_mag = lambda_mag
         self.lambda_mel = lambda_mel
-        self.lambda_wave = lambda_wave
         self.lambda_adv = lambda_adv
         self.lambda_fm = lambda_fm
         
-        # NEW: Spectral Convergence Loss (removes metallic sound)
-        self.sc_loss = SpectralConvergenceLoss(fft_sizes=fft_sizes)
-        
-        # Mel Loss (for overall spectral shape)
+        # Mel Loss (main reconstruction objective)
         self.mel_loss = MultiResolutionMelLoss(
             fft_sizes=fft_sizes,
             sample_rate=sample_rate,
@@ -489,7 +482,7 @@ class AutoencoderLoss(nn.Module):
         disc_fake_outputs: List[torch.Tensor],
         real_features: List[List[torch.Tensor]],
         fake_features: List[List[torch.Tensor]],
-        use_adv: bool = True  # NEW: Option to disable adversarial during warmup
+        use_adv: bool = True
     ) -> Dict[str, torch.Tensor]:
         """
         Generator/Decoder loss.
@@ -510,14 +503,8 @@ class AutoencoderLoss(nn.Module):
         real_audio_crop = real_audio[..., :min_len]
         generated_audio_crop = generated_audio[..., :min_len]
         
-        # NEW: Spectral Convergence + Log Magnitude Loss (removes metallic sound!)
-        l_sc, l_mag = self.sc_loss(real_audio_crop, generated_audio_crop)
-        
-        # Mel reconstruction loss
+        # Mel reconstruction loss (main objective)
         l_mel = self.mel_loss(real_audio_crop, generated_audio_crop)
-        
-        # Waveform L1 loss
-        l_wave = F.l1_loss(generated_audio_crop, real_audio_crop)
         
         # Adversarial + Feature Matching (can be disabled during warmup)
         if use_adv and len(disc_fake_outputs) > 0:
@@ -527,22 +514,16 @@ class AutoencoderLoss(nn.Module):
             l_adv = torch.tensor(0.0, device=real_audio.device)
             l_fm = torch.tensor(0.0, device=real_audio.device)
         
-        # Total loss
+        # Total loss (simple: Mel + GAN + FM)
         total = (
-            self.lambda_sc * l_sc +
-            self.lambda_mag * l_mag +
             self.lambda_mel * l_mel +
-            self.lambda_wave * l_wave +
             self.lambda_adv * l_adv +
             self.lambda_fm * l_fm
         )
         
         return {
             "total": total,
-            "spectral_convergence": l_sc,  # NEW
-            "log_magnitude": l_mag,         # NEW
-            "reconstruction": l_mel,        # Renamed for compat
-            "waveform": l_wave,
+            "reconstruction": l_mel,
             "adversarial": l_adv,
             "feature_matching": l_fm
         }

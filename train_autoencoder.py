@@ -469,13 +469,10 @@ def main(args):
         mpd = DDP(mpd, device_ids=[local_rank])
         mrd = DDP(mrd, device_ids=[local_rank])
     
-    # Loss - CRITICAL: pass sample_rate and fft_sizes from config!
+    # Loss - simplified for WaveNeXt head (no SC/LogMag/Waveform needed)
     loss_weights = config.train_autoencoder.loss_weights
     loss_fn = AutoencoderLoss(
-        lambda_sc=loss_weights.get("spectral_convergence", 2.5),   # NEW
-        lambda_mag=loss_weights.get("log_magnitude", 2.5),         # NEW
-        lambda_mel=loss_weights.reconstruction,                     # Renamed
-        lambda_wave=loss_weights.get("waveform", 10.0),
+        lambda_mel=loss_weights.reconstruction,
         lambda_adv=loss_weights.adversarial,
         lambda_fm=loss_weights.feature_matching,
         fft_sizes=list(ae_config.discriminator.mrd_fft_sizes),
@@ -484,7 +481,8 @@ def main(args):
     )
     
     if is_main:
-        print(f"Loss config: sample_rate={config.audio.sample_rate}, fft_sizes={list(ae_config.discriminator.mrd_fft_sizes)}, n_mels={config.audio.n_mels}")
+        print(f"Loss config: λ_mel={loss_weights.reconstruction}, λ_adv={loss_weights.adversarial}, λ_fm={loss_weights.feature_matching}")
+        print(f"Audio config: sample_rate={config.audio.sample_rate}, fft_sizes={list(ae_config.discriminator.mrd_fft_sizes)}, n_mels={config.audio.n_mels}")
     
     # Optimizers
     optimizer_g = torch.optim.AdamW(

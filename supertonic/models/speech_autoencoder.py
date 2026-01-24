@@ -250,9 +250,71 @@ class LatentEncoder(nn.Module):
         return x
 
 
+class WaveNeXtHead(nn.Module):
+    """
+    WaveNeXt-style waveform head - REPLACES iSTFT head.
+    
+    Supertonic's key insight: Don't predict magnitude/phase explicitly!
+    Instead, use linear layers + PReLU to directly generate waveform samples.
+    
+    This avoids:
+    - Phase wrapping problems (tanh*π → metallic sound)
+    - Magnitude explosion (exp() instability)
+    - The fundamental difficulty of phase prediction
+    
+    Architecture:
+    - Linear(hidden_dim → hidden_dim) 
+    - PReLU activation
+    - Linear(hidden_dim → hop_length)
+    - Reshape to waveform
+    
+    Args:
+        input_dim: Input feature dimension (typically 512)
+        hop_length: Number of audio samples per frame
+    """
+    
+    def __init__(
+        self,
+        input_dim: int = 512,
+        hop_length: int = 256
+    ):
+        super().__init__()
+        self.hop_length = hop_length
+        
+        # WaveNeXt-style: two linear layers with PReLU
+        self.fc1 = nn.Linear(input_dim, input_dim)
+        self.act = nn.PReLU(num_parameters=input_dim)
+        self.fc2 = nn.Linear(input_dim, hop_length)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Convert frame features directly to waveform.
+        
+        Args:
+            x: Frame features [B, T, D]
+        
+        Returns:
+            audio: Waveform [B, T * hop_length]
+        """
+        batch_size, num_frames, _ = x.shape
+        
+        # Two-layer MLP with PReLU
+        x = self.fc1(x)      # [B, T, hidden_dim]
+        x = self.act(x)      # PReLU activation
+        x = self.fc2(x)      # [B, T, hop_length]
+        
+        # Reshape to waveform: flatten time × hop_length
+        audio = x.reshape(batch_size, num_frames * self.hop_length)
+        
+        return audio
+
+
 class ISTFTHead(nn.Module):
     """
-    iSTFT Head для реконструкції waveform з frame-level features.
+    [DEPRECATED] iSTFT Head для реконструкції waveform з frame-level features.
+    
+    WARNING: This approach causes metallic sound due to explicit phase prediction.
+    Use WaveNeXtHead instead!
 
     Генерує STFT magnitude та phase, потім застосовує iSTFT.
 
@@ -331,10 +393,13 @@ class LatentDecoder(nn.Module):
     """
     Latent Decoder - декодує латенти в waveform.
 
-    Архітектура:
+    Архітектура (Supertonic-style):
     1. Conv1d(24 → 512) + BatchNorm
     2. 10 dilated ConvNeXt blocks (dilations: [1,2,4,1,2,4,1,1,1,1])
-    3. iSTFT head → waveform
+    3. WaveNeXtHead → waveform (NOT iSTFT!)
+
+    Key insight: Direct waveform generation via Linear+PReLU avoids
+    the phase prediction problems that cause metallic sound.
 
     Всі конволюції КАУЗАЛЬНІ для streaming підтримки.
     """
@@ -347,7 +412,7 @@ class LatentDecoder(nn.Module):
         kernel_size: int = 7,
         intermediate_mult: int = 4,
         dilations: Optional[List[int]] = None,
-        n_fft: int = 2048,
+        n_fft: int = 2048,  # kept for config compat, not used
         hop_length: int = 512,
         causal: bool = True,
         gradient_checkpointing: bool = False
@@ -359,6 +424,7 @@ class LatentDecoder(nn.Module):
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        self.hop_length = hop_length
 
         # Initial projection: latent → hidden
         self.input_conv = nn.Conv1d(input_dim, hidden_dim, kernel_size=1)
@@ -375,10 +441,9 @@ class LatentDecoder(nn.Module):
             gradient_checkpointing=gradient_checkpointing
         )
 
-        # iSTFT head
-        self.istft_head = ISTFTHead(
+        # WaveNeXt head - direct waveform generation (NO iSTFT!)
+        self.head = WaveNeXtHead(
             input_dim=hidden_dim,
-            n_fft=n_fft,
             hop_length=hop_length
         )
 
@@ -399,11 +464,11 @@ class LatentDecoder(nn.Module):
         # ConvNeXt blocks
         x = self.convnext(x)  # [B, hidden, T]
 
-        # iSTFT
+        # WaveNeXt head - direct waveform output
         x = x.transpose(1, 2)  # [B, T, hidden]
-        audio = self.istft_head(x)  # [B, T_audio]
+        audio = self.head(x)   # [B, T * hop_length]
         
-        # CRITICAL: Clamp output to prevent clipping/distortion
+        # Clamp output to valid audio range
         audio = torch.tanh(audio)
 
         return audio

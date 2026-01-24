@@ -164,59 +164,91 @@ def diagnose_decoder_internals(decoder, latent, device):
         x = decoder.convnext(x)
         analyze_tensor("После ConvNeXt stack", x)
         
-        # Step 3: Transpose for iSTFT
+        # Step 3: Transpose for head
         x = x.transpose(1, 2)  # [B, T, hidden]
         analyze_tensor("После transpose", x)
         
-        # Step 4: iSTFT Head internals
-        print(f"\n  --- iSTFT Head Details ---")
-        
-        istft = decoder.istft_head
-        
-        # Magnitude projection (before exp)
-        mag_raw = istft.mag_proj(x)
-        analyze_tensor("Magnitude (raw, before exp)", mag_raw)
-        
-        # Magnitude after exp
-        mag = mag_raw.exp()
-        analyze_tensor("Magnitude (after exp)", mag)
-        
-        # Phase projection
-        phase_raw = istft.phase_proj(x)
-        analyze_tensor("Phase (raw)", phase_raw)
-        
-        phase = torch.tanh(phase_raw) * 3.14159
-        analyze_tensor("Phase (after tanh * π)", phase)
-        
-        # Complex spectrum
-        real = mag * torch.cos(phase)
-        imag = mag * torch.sin(phase)
-        analyze_tensor("STFT Real part", real)
-        analyze_tensor("STFT Imag part", imag)
-        
-        spec = torch.complex(real, imag)
-        spec = spec.transpose(1, 2)
-        
-        # iSTFT
-        audio_raw = torch.istft(
-            spec,
-            n_fft=istft.n_fft,
-            hop_length=istft.hop_length,
-            win_length=istft.n_fft,
-            window=istft.window.to(device),
-            center=True,
-            normalized=False,
-            onesided=True,
-            length=None,
-            return_complex=False
-        )
-        analyze_tensor("Audio BEFORE tanh", audio_raw)
-        
-        # After tanh
-        audio_final = torch.tanh(audio_raw)
-        analyze_tensor("Audio AFTER tanh", audio_final)
-        
-        return audio_raw, audio_final, mag, phase
+        # Step 4: Check which head type we have
+        if hasattr(decoder, 'head'):
+            # WaveNeXt head (new architecture)
+            print(f"\n  --- WaveNeXt Head Details ---")
+            
+            head = decoder.head
+            
+            # FC1 + PReLU
+            x_fc1 = head.fc1(x)
+            analyze_tensor("After fc1", x_fc1)
+            
+            x_act = head.act(x_fc1)
+            analyze_tensor("After PReLU", x_act)
+            
+            # FC2 → waveform frames
+            x_fc2 = head.fc2(x_act)
+            analyze_tensor("After fc2 (waveform frames)", x_fc2)
+            
+            # Reshape to waveform
+            batch_size, num_frames, _ = x_fc2.shape
+            audio_raw = x_fc2.reshape(batch_size, num_frames * head.hop_length)
+            analyze_tensor("Audio BEFORE tanh", audio_raw)
+            
+            audio_final = torch.tanh(audio_raw)
+            analyze_tensor("Audio AFTER tanh", audio_final)
+            
+            return audio_raw, audio_final, None, None
+            
+        elif hasattr(decoder, 'istft_head'):
+            # Legacy iSTFT head
+            print(f"\n  --- iSTFT Head Details (LEGACY) ---")
+            
+            istft = decoder.istft_head
+            
+            # Magnitude projection (before exp)
+            mag_raw = istft.mag_proj(x)
+            analyze_tensor("Magnitude (raw, before exp)", mag_raw)
+            
+            # Magnitude after exp
+            mag = mag_raw.exp()
+            analyze_tensor("Magnitude (after exp)", mag)
+            
+            # Phase projection
+            phase_raw = istft.phase_proj(x)
+            analyze_tensor("Phase (raw)", phase_raw)
+            
+            phase = torch.tanh(phase_raw) * 3.14159
+            analyze_tensor("Phase (after tanh * π)", phase)
+            
+            # Complex spectrum
+            real = mag * torch.cos(phase)
+            imag = mag * torch.sin(phase)
+            analyze_tensor("STFT Real part", real)
+            analyze_tensor("STFT Imag part", imag)
+            
+            spec = torch.complex(real, imag)
+            spec = spec.transpose(1, 2)
+            
+            # iSTFT
+            audio_raw = torch.istft(
+                spec,
+                n_fft=istft.n_fft,
+                hop_length=istft.hop_length,
+                win_length=istft.n_fft,
+                window=istft.window.to(device),
+                center=True,
+                normalized=False,
+                onesided=True,
+                length=None,
+                return_complex=False
+            )
+            analyze_tensor("Audio BEFORE tanh", audio_raw)
+            
+            # After tanh
+            audio_final = torch.tanh(audio_raw)
+            analyze_tensor("Audio AFTER tanh", audio_final)
+            
+            return audio_raw, audio_final, mag, phase
+        else:
+            print("  ⚠️  Unknown head type!")
+            return None, None, None, None
 
 
 def diagnose_full_pipeline(checkpoint_path: str, audio_path: str, output_dir: str = "diagnostic_outputs"):

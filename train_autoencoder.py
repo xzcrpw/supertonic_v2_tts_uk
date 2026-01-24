@@ -33,7 +33,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 
 from omegaconf import OmegaConf
-from tqdm import tqdm
 import wandb
 
 # Add project root to path
@@ -50,6 +49,7 @@ from supertonic.losses.autoencoder_loss import AutoencoderLoss
 from supertonic.data.dataset import AutoencoderDataset
 from supertonic.data.collate import autoencoder_collate_fn
 from supertonic.data.preprocessing import AudioProcessor
+from supertonic.utils.training_logger import TrainingLogger
 
 
 def setup_distributed():
@@ -510,24 +510,43 @@ def main(args):
             encoder, decoder, mpd, mrd,
             optimizer_g, optimizer_d, scaler
         )
-        print(f"Resumed from iteration {start_iteration}")
     
     # Training loop
     total_iterations = config.train_autoencoder.total_iterations
     checkpoint_interval = config.train_autoencoder.checkpoint_interval
     validation_interval = config.train_autoencoder.validation_interval
-    log_interval = config.logging.log_interval
-    
-    iteration = start_iteration
-    epoch = 0
-    
-    if is_main:
-        pbar = tqdm(total=total_iterations, initial=start_iteration, desc="Training")
+    log_interval = config.train_autoencoder.get("log_interval", config.logging.log_interval)
     
     # Get discriminator warmup steps from config
     disc_start_steps = config.train_autoencoder.get("discriminator_start_steps", 2000)
-    if is_main:
-        print(f"Discriminator warmup: {disc_start_steps} steps")
+    
+    # Initialize beautiful logger
+    logger = TrainingLogger(
+        total_iterations=total_iterations,
+        log_interval=log_interval,
+        checkpoint_interval=checkpoint_interval,
+        validation_interval=validation_interval,
+        disc_start_steps=disc_start_steps,
+        rank=rank,
+        world_size=world_size
+    )
+    
+    # Print config
+    logger.print_config({
+        'batch_size': config.train_autoencoder.batch_size,
+        'learning_rate': config.train_autoencoder.learning_rate,
+        'loss_weights': OmegaConf.to_container(config.train_autoencoder.loss_weights)
+    })
+    
+    # Log resume
+    if args.resume:
+        logger.log_resume(start_iteration, args.resume)
+    
+    # Log GPU status at start
+    logger.log_gpu_status()
+    
+    iteration = start_iteration
+    epoch = 0
     
     while iteration < total_iterations:
         if train_sampler is not None:
@@ -549,54 +568,51 @@ def main(args):
             
             iteration += 1
             
-            # Logging
-            if is_main and iteration % log_interval == 0:
-                if not args.no_wandb:
-                    wandb.log(losses, step=iteration)
-                
-                pbar.set_postfix({
-                    "g_loss": f"{losses['g_loss']:.4f}",
-                    "d_loss": f"{losses['d_loss']:.4f}",
-                    "recon": f"{losses['recon_loss']:.4f}"
-                })
-                pbar.update(log_interval)
+            # Logging with beautiful logger
+            logger.log_step(iteration, losses)
+            
+            # Wandb logging
+            if is_main and iteration % log_interval == 0 and not args.no_wandb:
+                wandb.log(losses, step=iteration)
             
             # Validation
             if is_main and iteration % validation_interval == 0:
                 val_metrics = validate(val_loader, encoder, decoder, loss_fn, device)
                 
+                logger.log_validation(iteration, val_metrics)
+                
                 if not args.no_wandb:
                     wandb.log(val_metrics, step=iteration)
-                
-                print(f"\nValidation at {iteration}: {val_metrics}")
             
             # Checkpoint
             if is_main and iteration % checkpoint_interval == 0:
+                ckpt_path = checkpoint_dir / f"checkpoint_{iteration}.pt"
                 save_checkpoint(
-                    checkpoint_dir / f"checkpoint_{iteration}.pt",
+                    ckpt_path,
                     iteration, encoder, decoder, mpd, mrd,
                     optimizer_g, optimizer_d, scaler,
                     OmegaConf.to_container(config)
                 )
+                logger.log_checkpoint(iteration, str(ckpt_path))
         
         epoch += 1
     
     # Final checkpoint
     if is_main:
+        ckpt_path = checkpoint_dir / "checkpoint_final.pt"
         save_checkpoint(
-            checkpoint_dir / "checkpoint_final.pt",
+            ckpt_path,
             iteration, encoder, decoder, mpd, mrd,
             optimizer_g, optimizer_d, scaler,
             OmegaConf.to_container(config)
         )
-        
-        pbar.close()
+        logger.log_checkpoint(iteration, str(ckpt_path))
+        logger.log_training_complete(iteration)
         
         if not args.no_wandb:
             wandb.finish()
     
     cleanup_distributed()
-    print("Training completed!")
 
 
 if __name__ == "__main__":

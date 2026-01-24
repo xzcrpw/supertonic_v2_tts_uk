@@ -500,19 +500,20 @@ class LatentDecoder(nn.Module):
 class PeriodDiscriminator(nn.Module):
     """
     Period Discriminator для GAN training.
-
-    Аналізує аудіо з періодичним sampling для виявлення
-    періодичних артефактів.
+    
+    From Supertonic paper (Appendix A.1.3):
+    "Each MPD consists of six convolutional layers with hidden sizes 
+    16, 64, 256, 512, 512, and 1."
 
     Args:
         period: Sampling period
-        channels: Number of channels per layer
+        channels: Number of channels per layer (paper: [16, 64, 256, 512, 512])
     """
 
     def __init__(
         self,
         period: int,
-        channels: List[int] = [32, 128, 512, 1024, 1024]
+        channels: List[int] = [16, 64, 256, 512, 512]  # Paper spec!
     ):
         super().__init__()
 
@@ -618,13 +619,139 @@ class MultiPeriodDiscriminator(nn.Module):
         return outputs, features
 
 
-class ScaleDiscriminator(nn.Module):
+class SpectrogramDiscriminator(nn.Module):
     """
-    Scale Discriminator для Multi-Resolution Discriminator.
-
+    Spectrogram-based Discriminator for MRD.
+    
+    From Supertonic paper (Appendix A.1.3, Table 7):
+    "For MRDs, log-scaled linear spectrograms serve as input"
+    
+    Architecture (Table 7):
+    - Conv2D: 1→16, kernel (5,5), stride (1,1)
+    - Conv2D: 16→16, kernel (5,5), stride (2,1)
+    - Conv2D: 16→16, kernel (5,5), stride (2,1)
+    - Conv2D: 16→16, kernel (5,5), stride (2,1)
+    - Conv2D: 16→16, kernel (5,5), stride (1,1)
+    - Conv2D: 16→1, kernel (3,3), stride (1,1)
+    
     Args:
-        channels: Number of channels per layer
+        n_fft: FFT size for spectrogram
     """
+
+    def __init__(self, n_fft: int = 1024):
+        super().__init__()
+        
+        self.n_fft = n_fft
+        self.hop_length = n_fft // 4  # Paper: "hop sizes are set to one-quarter"
+        
+        # Hann window
+        self.register_buffer("window", torch.hann_window(n_fft))
+        
+        # Conv2D layers from Table 7
+        self.layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(1, 16, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2)),
+                nn.LeakyReLU(0.1)
+            ),
+            nn.Sequential(
+                nn.Conv2d(16, 16, kernel_size=(5, 5), stride=(2, 1), padding=(2, 2)),
+                nn.LeakyReLU(0.1)
+            ),
+            nn.Sequential(
+                nn.Conv2d(16, 16, kernel_size=(5, 5), stride=(2, 1), padding=(2, 2)),
+                nn.LeakyReLU(0.1)
+            ),
+            nn.Sequential(
+                nn.Conv2d(16, 16, kernel_size=(5, 5), stride=(2, 1), padding=(2, 2)),
+                nn.LeakyReLU(0.1)
+            ),
+            nn.Sequential(
+                nn.Conv2d(16, 16, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2)),
+                nn.LeakyReLU(0.1)
+            ),
+            nn.Conv2d(16, 1, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        ])
+    
+    def compute_spectrogram(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute log-scaled linear spectrogram."""
+        # x: [B, T] or [B, 1, T]
+        if x.dim() == 3:
+            x = x.squeeze(1)
+        
+        # STFT
+        spec = torch.stft(
+            x, 
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.n_fft,
+            window=self.window,
+            center=True,
+            return_complex=True
+        )
+        
+        # Magnitude → log scale
+        mag = spec.abs()
+        log_mag = torch.log(mag.clamp(min=1e-5))
+        
+        # [B, F, T] → [B, 1, F, T]
+        return log_mag.unsqueeze(1)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        """Forward pass."""
+        # Compute log spectrogram
+        x = self.compute_spectrogram(x)
+        
+        features = []
+        for layer in self.layers:
+            x = layer(x)
+            features.append(x)
+
+        return x.flatten(1, -1), features[:-1]
+
+
+class MultiResolutionDiscriminator(nn.Module):
+    """
+    Multi-Resolution Discriminator (MRD) для Supertonic v2.
+    
+    From paper (Appendix A.1.3):
+    "For MRDs, log-scaled linear spectrograms serve as input, 
+    with three different FFT sizes: 512, 1024, and 2048."
+
+    FFT sizes: [512, 1024, 2048]
+    """
+
+    def __init__(
+        self,
+        fft_sizes: List[int] = [512, 1024, 2048]
+    ):
+        super().__init__()
+
+        self.fft_sizes = fft_sizes
+
+        # One spectrogram discriminator per FFT size
+        self.discriminators = nn.ModuleList([
+            SpectrogramDiscriminator(n_fft=fft) for fft in fft_sizes
+        ])
+
+    def forward(
+        self,
+        x: torch.Tensor
+    ) -> Tuple[List[torch.Tensor], List[List[torch.Tensor]]]:
+        """Forward pass through all resolution discriminators."""
+        outputs = []
+        features = []
+
+        for disc in self.discriminators:
+            out, feat = disc(x)
+            outputs.append(out)
+            features.append(feat)
+
+        return outputs, features
+
+
+# Keep old ScaleDiscriminator for backward compatibility (deprecated)
+class ScaleDiscriminator(nn.Module):
+    """[DEPRECATED] Use SpectrogramDiscriminator instead."""
 
     def __init__(
         self,
@@ -655,64 +782,15 @@ class ScaleDiscriminator(nn.Module):
             layers.append(nn.Sequential(layer, nn.LeakyReLU(0.1)))
             in_ch = out_ch
 
-        # Final conv
         layers.append(nn.Conv1d(in_ch, 1, kernel_size=3, padding=1))
-
         self.layers = nn.ModuleList(layers)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        """Forward pass."""
         features = []
         for layer in self.layers:
             x = layer(x)
             features.append(x)
-
         return x.flatten(1, -1), features[:-1]
-
-
-class MultiResolutionDiscriminator(nn.Module):
-    """
-    Multi-Resolution Discriminator (MRD) для Supertonic v2.
-
-    FFT sizes: [512, 1024, 2048] - різні temporal resolutions.
-    """
-
-    def __init__(
-        self,
-        fft_sizes: List[int] = [512, 1024, 2048]
-    ):
-        super().__init__()
-
-        self.fft_sizes = fft_sizes
-
-        # Pooling для downsampling
-        self.pools = nn.ModuleList([
-            nn.AvgPool1d(kernel_size=fft // 256, stride=fft // 256)
-            for fft in fft_sizes
-        ])
-
-        self.discriminators = nn.ModuleList([
-            ScaleDiscriminator() for _ in fft_sizes
-        ])
-
-    def forward(
-        self,
-        x: torch.Tensor
-    ) -> Tuple[List[torch.Tensor], List[List[torch.Tensor]]]:
-        """Forward pass through all scale discriminators."""
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-
-        outputs = []
-        features = []
-
-        for pool, disc in zip(self.pools, self.discriminators):
-            x_pooled = pool(x)
-            out, feat = disc(x_pooled)
-            outputs.append(out)
-            features.append(feat)
-
-        return outputs, features
 
 
 class SpeechAutoencoder(nn.Module):

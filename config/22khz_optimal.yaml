@@ -110,31 +110,32 @@ languages:
 # ========== TRAINING: AUTOENCODER (Stage 1) ==========
 train_autoencoder:
   # Batch & segment settings
-  batch_size: 32              # Reduced - OOM when discriminator active
+  # Paper: batch=128 on 4×RTX4090 (24GB). RTX 5090 has 32GB, so batch=48 per GPU.
+  batch_size: 48              # Per GPU (48×4=192 effective batch)
   segment_length: 132300      # 6 seconds at 22050Hz
-  gradient_accumulation_steps: 2  # Effective batch = 64
+  gradient_accumulation_steps: 1  # With 4 GPUs, effective batch = 192
   
-  # Optimizer - REDUCED LR to prevent GAN collapse (BigVGAN finding)
-  learning_rate: 1.0e-4       # Was 2e-4, halved for stability
+  # Optimizer - Paper uses lr=2e-4
+  learning_rate: 2.0e-4       # Paper: "learning rate of 2×10⁻⁴"
   optimizer:
     betas: [0.8, 0.99]        # AdamW betas from HiFi-GAN
     weight_decay: 0.01
   
   # Schedule
-  total_iterations: 200000    # Faster convergence with 22kHz
+  total_iterations: 1500000   # Paper: "1.5M iterations"
   warmup_steps: 5000
-  checkpoint_interval: 500    # Every 500 iterations (~20 min) for live monitoring
-  validation_interval: 2500
-  log_interval: 100
+  checkpoint_interval: 1000   # Every 1k iterations (auto-resume friendly)
+  validation_interval: 5000   # Validate every 5k
+  log_interval: 50            # Log every 50 steps for better monitoring
   
   # Discriminator warmup - generator trains alone first
   discriminator_start_steps: 5000  # Gen needs time to learn WaveNeXt head
   
-  # Loss weights (Supertonic-style)
+  # Loss weights (Paper spec!)
   loss_weights:
-    reconstruction: 45.0       # Multi-resolution mel L1 (main loss)
-    adversarial: 1.0           # GAN loss
-    feature_matching: 1.0      # INCREASED from 0.1 - reduces buzzy artifacts
+    reconstruction: 45.0       # Paper: λ_recon=45
+    adversarial: 1.0           # Paper: λ_adv=1
+    feature_matching: 0.1      # Paper: λ_fm=0.1
   
   # AMP
   amp:
@@ -142,9 +143,9 @@ train_autoencoder:
     dtype: bfloat16           # Best for Ampere+ GPUs
   
   # DataLoader
-  num_workers: 30              # AMD EPYC 7282 16-core = 32 threads
+  num_workers: 8               # Per GPU
   pin_memory: true
-  cache_audio: true            # Cache all audio in RAM (needs ~50-80GB for full dataset)
+  cache_audio: true            # Cache all audio in RAM
 
 # ========== TRAINING: TEXT-TO-LATENT (Stage 2) ==========
 train_tts:

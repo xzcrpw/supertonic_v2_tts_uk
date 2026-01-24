@@ -140,7 +140,8 @@ train_autoencoder:
     dtype: bfloat16           # Best for Ampere+ GPUs
   
   # DataLoader
-  num_workers: 30              # AMD EPYC 7282 16-core = 32 threads
+  # REDUCED from 30 to 8 - with cache_audio=True, each worker duplicates cache!
+  num_workers: 8
   pin_memory: true
   cache_audio: true            # Cache all audio in RAM (needs ~50-80GB for full dataset)
 

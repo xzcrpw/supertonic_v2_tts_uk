@@ -295,7 +295,10 @@ class ISTFTHead(nn.Module):
         batch_size, num_frames, _ = x.shape
 
         # Predict magnitude (exp для positive values)
-        mag = self.mag_proj(x).exp()  # [B, T, n_freqs]
+        # CRITICAL: Clamp raw values to prevent magnitude explosion
+        # exp(5) ≈ 148, exp(4) ≈ 55 - reasonable max magnitudes for audio
+        mag_raw = self.mag_proj(x)
+        mag = mag_raw.clamp(min=-20.0, max=5.0).exp()  # [B, T, n_freqs]
 
         # Predict phase (normalized to [-π, π])
         phase = self.phase_proj(x)  # [B, T, n_freqs]

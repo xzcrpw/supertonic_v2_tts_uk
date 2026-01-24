@@ -344,10 +344,17 @@ def main(args):
     if is_main:
         print(f"Using segment_length: {segment_length} samples ({segment_length/config.audio.sample_rate:.1f} sec)")
     
-    # Get data directory (for resolving relative paths in manifest)
-    data_dir = config.paths.get("data_dir", "data")
+    # Get data directory (CLI override or config)
+    data_dir = args.data_dir if args.data_dir else config.paths.get("data_dir", "data")
     if is_main:
         print(f"Data directory: {data_dir}")
+    
+    # Override output directory if provided
+    if args.output_dir:
+        config.output.checkpoint_dir = f"{args.output_dir}/checkpoints"
+        config.output.sample_dir = f"{args.output_dir}/samples"
+        if is_main:
+            print(f"Output directory: {args.output_dir}")
     
     # Dataset with segment cropping and RAM caching
     cache_audio = config.train_autoencoder.get("cache_audio", False)
@@ -629,6 +636,10 @@ if __name__ == "__main__":
                         help="Override learning rate")
     parser.add_argument("--no-wandb", action="store_true",
                         help="Disable wandb logging")
+    parser.add_argument("--data_dir", "--data-dir", type=str, default=None,
+                        help="Override data directory")
+    parser.add_argument("--output_dir", "--output-dir", type=str, default=None,
+                        help="Override output directory")
     
     args = parser.parse_args()
     main(args)

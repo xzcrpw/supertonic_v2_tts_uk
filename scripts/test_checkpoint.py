@@ -157,7 +157,8 @@ def load_checkpoint(checkpoint_path: str, device: str = "cuda") -> Tuple:
     encoder.eval()
     decoder.eval()
     
-    step = checkpoint.get("step", 0)
+    # Try both "iteration" (new) and "step" (legacy) keys
+    step = checkpoint.get("iteration", checkpoint.get("step", 0))
     print(f"   ✅ Loaded step {step:,}")
     
     # Update config with detected values (for use in reconstruction)

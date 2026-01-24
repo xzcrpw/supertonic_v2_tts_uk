@@ -254,56 +254,78 @@ class WaveNeXtHead(nn.Module):
     """
     WaveNeXt-style waveform head - REPLACES iSTFT head.
     
-    Supertonic's key insight: Don't predict magnitude/phase explicitly!
-    Instead, use linear layers + PReLU to directly generate waveform samples.
+    From Supertonic paper (Appendix A.1.2):
+    "A convolutional layer with kernel size of 3 converts the normalized output 
+    of the ConvNeXt blocks to hidden representations of dimension 2048. 
+    A final linear layer then projects these representations into frame-level 
+    outputs with 512 channels. These outputs are subsequently reshaped into 
+    a single-channel format, producing the final waveform output."
     
-    This avoids:
-    - Phase wrapping problems (tanh*π → metallic sound)
-    - Magnitude explosion (exp() instability)
-    - The fundamental difficulty of phase prediction
-    
-    Architecture:
-    - Linear(hidden_dim → hidden_dim) 
-    - PReLU activation
-    - Linear(hidden_dim → hop_length)
+    Architecture (from paper):
+    - BatchNorm(hidden_dim)
+    - Conv1d(hidden_dim → head_dim, kernel=3)  # head_dim=2048 in paper
+    - Linear(head_dim → frame_samples)  # 512 samples per frame at 44.1kHz
     - Reshape to waveform
     
+    For 22kHz with hop_length=256:
+    - Frame rate = 22050/256 ≈ 86 Hz
+    - Output per frame = hop_length = 256 samples
+    
     Args:
-        input_dim: Input feature dimension (typically 512)
-        hop_length: Number of audio samples per frame
+        input_dim: Input feature dimension (512)
+        head_dim: Intermediate dimension (2048 in paper)
+        hop_length: Number of audio samples per frame (256 for 22kHz)
     """
     
     def __init__(
         self,
         input_dim: int = 512,
+        head_dim: int = 2048,
         hop_length: int = 256
     ):
         super().__init__()
         self.hop_length = hop_length
         
-        # WaveNeXt-style: two linear layers with PReLU
-        self.fc1 = nn.Linear(input_dim, input_dim)
-        self.act = nn.PReLU(num_parameters=input_dim)
-        self.fc2 = nn.Linear(input_dim, hop_length)
+        # From paper: "followed by another batch normalization"
+        self.norm = nn.BatchNorm1d(input_dim)
+        
+        # From paper: "a convolutional layer with kernel size of 3 converts 
+        # the normalized output to hidden representations of dimension 2048"
+        self.conv = nn.Conv1d(input_dim, head_dim, kernel_size=3, padding=1)
+        
+        # From paper: "A final linear layer then projects these representations 
+        # into frame-level outputs with 512 channels" 
+        # (512 for 44.1kHz, we use hop_length for flexibility)
+        self.fc = nn.Linear(head_dim, hop_length)
+        
+        # PReLU activation between conv and linear (from WaveNeXt inspiration)
+        self.act = nn.PReLU(num_parameters=head_dim)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Convert frame features directly to waveform.
         
         Args:
-            x: Frame features [B, T, D]
+            x: Frame features [B, hidden_dim, T] (channel-first from ConvNeXt)
         
         Returns:
             audio: Waveform [B, T * hop_length]
         """
+        # BatchNorm expects [B, C, T]
+        x = self.norm(x)  # [B, hidden_dim, T]
+        
+        # Conv1d: [B, hidden_dim, T] → [B, head_dim, T]
+        x = self.conv(x)
+        x = self.act(x)
+        
+        # Transpose for Linear: [B, head_dim, T] → [B, T, head_dim]
+        x = x.transpose(1, 2)
+        
+        # Linear: [B, T, head_dim] → [B, T, hop_length]
+        x = self.fc(x)
+        
+        # Reshape to waveform: [B, T, hop_length] → [B, T * hop_length]
         batch_size, num_frames, _ = x.shape
-        
-        # Two-layer MLP with PReLU
-        x = self.fc1(x)      # [B, T, hidden_dim]
-        x = self.act(x)      # PReLU activation
-        x = self.fc2(x)      # [B, T, hop_length]
-        
-        # Reshape to waveform: flatten time × hop_length
         audio = x.reshape(batch_size, num_frames * self.hop_length)
         
         return audio
@@ -442,8 +464,10 @@ class LatentDecoder(nn.Module):
         )
 
         # WaveNeXt head - direct waveform generation (NO iSTFT!)
+        # From paper: head_dim=2048 (intermediate_mult * hidden_dim)
         self.head = WaveNeXtHead(
             input_dim=hidden_dim,
+            head_dim=hidden_dim * intermediate_mult,  # 512*4=2048
             hop_length=hop_length
         )
 
@@ -464,8 +488,7 @@ class LatentDecoder(nn.Module):
         # ConvNeXt blocks
         x = self.convnext(x)  # [B, hidden, T]
 
-        # WaveNeXt head - direct waveform output
-        x = x.transpose(1, 2)  # [B, T, hidden]
+        # WaveNeXt head expects [B, hidden, T] (channel-first)
         audio = self.head(x)   # [B, T * hop_length]
         
         # Clamp output to valid audio range

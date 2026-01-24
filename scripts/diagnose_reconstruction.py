@@ -164,31 +164,35 @@ def diagnose_decoder_internals(decoder, latent, device):
         x = decoder.convnext(x)
         analyze_tensor("После ConvNeXt stack", x)
         
-        # Step 3: Transpose for head
-        x = x.transpose(1, 2)  # [B, T, hidden]
-        analyze_tensor("После transpose", x)
-        
-        # Step 4: Check which head type we have
+        # Step 3: Check which head type we have
         if hasattr(decoder, 'head'):
-            # WaveNeXt head (new architecture)
+            # WaveNeXt head (new architecture) - expects [B, C, T]
             print(f"\n  --- WaveNeXt Head Details ---")
             
             head = decoder.head
             
-            # FC1 + PReLU
-            x_fc1 = head.fc1(x)
-            analyze_tensor("After fc1", x_fc1)
+            # BatchNorm (expects [B, C, T])
+            x_norm = head.norm(x)
+            analyze_tensor("After head.norm (BatchNorm)", x_norm)
             
-            x_act = head.act(x_fc1)
+            # Conv1d → head_dim
+            x_conv = head.conv(x_norm)
+            analyze_tensor("After head.conv (→ head_dim)", x_conv)
+            
+            # PReLU
+            x_act = head.act(x_conv)
             analyze_tensor("After PReLU", x_act)
             
-            # FC2 → waveform frames
-            x_fc2 = head.fc2(x_act)
-            analyze_tensor("After fc2 (waveform frames)", x_fc2)
+            # Transpose for Linear: [B, head_dim, T] → [B, T, head_dim]
+            x_t = x_act.transpose(1, 2)
+            
+            # Linear → hop_length
+            x_fc = head.fc(x_t)
+            analyze_tensor("After head.fc (waveform frames)", x_fc)
             
             # Reshape to waveform
-            batch_size, num_frames, _ = x_fc2.shape
-            audio_raw = x_fc2.reshape(batch_size, num_frames * head.hop_length)
+            batch_size, num_frames, _ = x_fc.shape
+            audio_raw = x_fc.reshape(batch_size, num_frames * head.hop_length)
             analyze_tensor("Audio BEFORE tanh", audio_raw)
             
             audio_final = torch.tanh(audio_raw)
@@ -198,6 +202,8 @@ def diagnose_decoder_internals(decoder, latent, device):
             
         elif hasattr(decoder, 'istft_head'):
             # Legacy iSTFT head
+            # Need to transpose for iSTFT head which expects [B, T, hidden]
+            x = x.transpose(1, 2)
             print(f"\n  --- iSTFT Head Details (LEGACY) ---")
             
             istft = decoder.istft_head

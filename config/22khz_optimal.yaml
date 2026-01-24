@@ -110,9 +110,9 @@ languages:
 # ========== TRAINING: AUTOENCODER (Stage 1) ==========
 train_autoencoder:
   # Batch & segment settings
-  batch_size: 64              # Doubled! 98GB VRAM allows it
+  batch_size: 32              # Reduced - OOM when discriminator active
   segment_length: 132300      # 6 seconds at 22050Hz
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2  # Effective batch = 64
   
   # Optimizer
   learning_rate: 1.0e-4

@@ -61,7 +61,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
 # Number of parallel workers for file I/O
-NUM_WORKERS = 20
+NUM_WORKERS = 96
 
 try:
     import torch

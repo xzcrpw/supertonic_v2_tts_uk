@@ -389,8 +389,9 @@ def main(args):
     # Get num_workers from config (try train_autoencoder first, then training.autoencoder)
     num_workers = config.train_autoencoder.get("num_workers", 
                     config.training.autoencoder.get("num_workers", 4))
+    prefetch = config.train_autoencoder.get("prefetch_factor", 4)
     if is_main:
-        print(f"DataLoader num_workers: {num_workers}")
+        print(f"DataLoader: {num_workers} workers, prefetch={prefetch}")
     
     train_loader = DataLoader(
         train_dataset,
@@ -402,7 +403,7 @@ def main(args):
         collate_fn=autoencoder_collate_fn,
         drop_last=True,
         persistent_workers=num_workers > 0,  # Keep workers alive between epochs
-        prefetch_factor=4 if num_workers > 0 else None  # Prefetch more batches
+        prefetch_factor=prefetch if num_workers > 0 else None
     )
     
     val_loader = DataLoader(
@@ -412,7 +413,8 @@ def main(args):
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=autoencoder_collate_fn,
-        persistent_workers=num_workers > 0
+        persistent_workers=num_workers > 0,
+        prefetch_factor=prefetch if num_workers > 0 else None
     )
     
     # Models

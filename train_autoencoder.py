@@ -140,10 +140,16 @@ def train_step(
     loss_fn: AutoencoderLoss,
     scaler: GradScaler,
     device: torch.device,
-    use_amp: bool = True
+    use_amp: bool = True,
+    iteration: int = 0,
+    disc_start_steps: int = 0  # NEW: Discriminator warmup
 ) -> Dict[str, float]:
     """
     Один training step.
+    
+    Args:
+        iteration: Current training iteration
+        disc_start_steps: Steps before discriminator starts (warmup)
     
     Returns:
         Dict з loss values
@@ -151,40 +157,49 @@ def train_step(
     audio = batch["audio"].to(device)
     mel = batch["mel"].to(device)
     
+    # Determine if discriminator should be active
+    disc_active = iteration >= disc_start_steps
+    
     # ==================== Discriminator Step ====================
-    optimizer_d.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+    d_loss_val = 0.0
+    mpd_real_features = []
+    mrd_real_features = []
     
-    with autocast(enabled=use_amp, dtype=torch.bfloat16):
-        # Encode → Decode (no grad for D step)
-        with torch.no_grad():
-            latent = encoder(mel)
-            generated_audio = decoder(latent)
+    if disc_active:
+        optimizer_d.zero_grad(set_to_none=True)
         
-        # Match lengths
-        min_len = min(audio.size(-1), generated_audio.size(-1))
-        audio_trim = audio[..., :min_len]
-        generated_trim = generated_audio[..., :min_len].detach()  # Ensure detached
+        with autocast(enabled=use_amp, dtype=torch.bfloat16):
+            # Encode → Decode (no grad for D step)
+            with torch.no_grad():
+                latent = encoder(mel)
+                generated_audio = decoder(latent)
+            
+            # Match lengths
+            min_len = min(audio.size(-1), generated_audio.size(-1))
+            audio_trim = audio[..., :min_len]
+            generated_trim = generated_audio[..., :min_len].detach()
+            
+            # Discriminator forward
+            mpd_real_outputs, mpd_real_features = mpd(audio_trim)
+            mpd_fake_outputs, _ = mpd(generated_trim)
+            
+            mrd_real_outputs, mrd_real_features = mrd(audio_trim)
+            mrd_fake_outputs, _ = mrd(generated_trim)
+            
+            # Combine outputs
+            real_outputs = mpd_real_outputs + mrd_real_outputs
+            fake_outputs = mpd_fake_outputs + mrd_fake_outputs
+            
+            # Discriminator loss
+            d_losses = loss_fn.discriminator_loss(real_outputs, fake_outputs)
+            d_loss = d_losses["total"]
         
-        # Discriminator forward
-        mpd_real_outputs, mpd_real_features = mpd(audio_trim)
-        mpd_fake_outputs, _ = mpd(generated_trim)
+        scaler.scale(d_loss).backward()
+        scaler.step(optimizer_d)
+        d_loss_val = d_losses["total"].item()
         
-        mrd_real_outputs, mrd_real_features = mrd(audio_trim)
-        mrd_fake_outputs, _ = mrd(generated_trim)
-        
-        # Combine outputs
-        real_outputs = mpd_real_outputs + mrd_real_outputs
-        fake_outputs = mpd_fake_outputs + mrd_fake_outputs
-        
-        # Discriminator loss
-        d_losses = loss_fn.discriminator_loss(real_outputs, fake_outputs)
-        d_loss = d_losses["total"]
-    
-    scaler.scale(d_loss).backward()
-    scaler.step(optimizer_d)
-    
-    # Clear D-step intermediates to save memory
-    del mpd_fake_outputs, mrd_fake_outputs, fake_outputs, d_loss
+        # Clear D-step intermediates
+        del mpd_fake_outputs, mrd_fake_outputs, fake_outputs, d_loss
     
     # ==================== Generator Step ====================
     optimizer_g.zero_grad(set_to_none=True)
@@ -199,28 +214,31 @@ def train_step(
         audio_trim = audio[..., :min_len]
         generated_trim = generated_audio[..., :min_len]
         
-        # Discriminator forward (for generator loss)
-        mpd_fake_outputs, mpd_fake_features = mpd(generated_trim)
-        mrd_fake_outputs, mrd_fake_features = mrd(generated_trim)
+        # Discriminator forward only if disc is active
+        fake_outputs = []
+        fake_features = []
+        real_features_detached = []
         
-        # Combine outputs (list of tensors)
-        fake_outputs = mpd_fake_outputs + mrd_fake_outputs
+        if disc_active:
+            mpd_fake_outputs, mpd_fake_features = mpd(generated_trim)
+            mrd_fake_outputs, mrd_fake_features = mrd(generated_trim)
+            
+            fake_outputs = mpd_fake_outputs + mrd_fake_outputs
+            fake_features = mpd_fake_features + mrd_fake_features
+            
+            real_features_detached = [
+                [f.detach() for f in feat_list] 
+                for feat_list in (mpd_real_features + mrd_real_features)
+            ]
         
-        # Features are List[List[Tensor]] - keep structure!
-        # Detach real features from D step
-        real_features_detached = [
-            [f.detach() for f in feat_list] 
-            for feat_list in (mpd_real_features + mrd_real_features)
-        ]
-        fake_features = mpd_fake_features + mrd_fake_features
-        
-        # Generator loss
+        # Generator loss (use_adv=False during warmup)
         g_losses = loss_fn.generator_loss(
             real_audio=audio_trim,
             generated_audio=generated_trim,
             disc_fake_outputs=fake_outputs,
             real_features=real_features_detached,
-            fake_features=fake_features
+            fake_features=fake_features,
+            use_adv=disc_active  # NEW: disable adversarial during warmup
         )
         g_loss = g_losses["total"]
     
@@ -233,7 +251,7 @@ def train_step(
     torch.cuda.empty_cache()
     
     return {
-        "d_loss": d_losses["total"].item(),
+        "d_loss": d_loss_val,  # Fixed: use d_loss_val (0 during warmup)
         "g_loss": g_losses["total"].item(),
         "recon_loss": g_losses["reconstruction"].item(),
         "adv_loss": g_losses["adversarial"].item(),
@@ -452,14 +470,17 @@ def main(args):
         mrd = DDP(mrd, device_ids=[local_rank])
     
     # Loss - CRITICAL: pass sample_rate and fft_sizes from config!
+    loss_weights = config.train_autoencoder.loss_weights
     loss_fn = AutoencoderLoss(
-        lambda_recon=config.train_autoencoder.loss_weights.reconstruction,
-        lambda_wave=config.train_autoencoder.loss_weights.get("waveform", 10.0),
-        lambda_adv=config.train_autoencoder.loss_weights.adversarial,
-        lambda_fm=config.train_autoencoder.loss_weights.feature_matching,
-        fft_sizes=list(ae_config.discriminator.mrd_fft_sizes),  # Use same FFT sizes as MRD
-        sample_rate=config.audio.sample_rate,                    # CRITICAL!
-        n_mels=config.audio.n_mels                               # CRITICAL!
+        lambda_sc=loss_weights.get("spectral_convergence", 2.5),   # NEW
+        lambda_mag=loss_weights.get("log_magnitude", 2.5),         # NEW
+        lambda_mel=loss_weights.reconstruction,                     # Renamed
+        lambda_wave=loss_weights.get("waveform", 10.0),
+        lambda_adv=loss_weights.adversarial,
+        lambda_fm=loss_weights.feature_matching,
+        fft_sizes=list(ae_config.discriminator.mrd_fft_sizes),
+        sample_rate=config.audio.sample_rate,
+        n_mels=config.audio.n_mels
     )
     
     if is_main:
@@ -505,6 +526,11 @@ def main(args):
     if is_main:
         pbar = tqdm(total=total_iterations, initial=start_iteration, desc="Training")
     
+    # Get discriminator warmup steps from config
+    disc_start_steps = config.train_autoencoder.get("discriminator_start_steps", 2000)
+    if is_main:
+        print(f"Discriminator warmup: {disc_start_steps} steps")
+    
     while iteration < total_iterations:
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
@@ -513,11 +539,14 @@ def main(args):
             if iteration >= total_iterations:
                 break
             
-            # Training step
+            # Training step (with warmup support)
             losses = train_step(
                 batch, encoder, decoder, mpd, mrd,
                 optimizer_g, optimizer_d, loss_fn, scaler,
-                device, use_amp=config.train_autoencoder.amp.enabled
+                device, 
+                use_amp=config.train_autoencoder.amp.enabled,
+                iteration=iteration,
+                disc_start_steps=disc_start_steps
             )
             
             iteration += 1

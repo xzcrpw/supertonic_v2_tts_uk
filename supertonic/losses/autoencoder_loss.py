@@ -165,6 +165,95 @@ class MultiResolutionSTFT(nn.Module):
         return mels
 
 
+class SpectralConvergenceLoss(nn.Module):
+    """
+    Spectral Convergence + Log Magnitude Loss (HiFi-GAN style).
+    
+    Працює на ЛІНІЙНОМУ спектрі (не Mel!) для кращої якості фази.
+    SC = ||mag_real - mag_fake||_F / ||mag_real||_F
+    LM = ||log(mag_real) - log(mag_fake)||_1
+    
+    Це критично для усунення "металевого" звуку!
+    """
+    
+    def __init__(
+        self,
+        fft_sizes: List[int] = [512, 1024, 2048],
+        hop_sizes: Optional[List[int]] = None,
+        win_sizes: Optional[List[int]] = None,
+    ):
+        super().__init__()
+        
+        self.fft_sizes = fft_sizes
+        self.hop_sizes = hop_sizes or [s // 4 for s in fft_sizes]
+        self.win_sizes = win_sizes or fft_sizes
+        
+        # Register windows
+        for i, win_size in enumerate(self.win_sizes):
+            window = torch.hann_window(win_size)
+            self.register_buffer(f"window_{i}", window)
+    
+    def _stft_magnitude(self, audio: torch.Tensor, fft_size: int, 
+                        hop_size: int, win_size: int, window: torch.Tensor) -> torch.Tensor:
+        """Compute STFT magnitude."""
+        if audio.dim() == 3:
+            audio = audio.squeeze(1)
+        
+        spec = torch.stft(
+            audio,
+            n_fft=fft_size,
+            hop_length=hop_size,
+            win_length=win_size,
+            window=window,
+            center=True,
+            pad_mode='reflect',
+            normalized=False,
+            onesided=True,
+            return_complex=True
+        )
+        return spec.abs()
+    
+    def forward(self, real: torch.Tensor, generated: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            sc_loss: Spectral Convergence loss
+            mag_loss: Log Magnitude loss  
+        """
+        if real.dim() == 3:
+            real = real.squeeze(1)
+        if generated.dim() == 3:
+            generated = generated.squeeze(1)
+            
+        # Match lengths
+        min_len = min(real.size(-1), generated.size(-1))
+        real = real[..., :min_len]
+        generated = generated[..., :min_len]
+        
+        sc_loss = 0.0
+        mag_loss = 0.0
+        
+        for i, (fft_size, hop_size, win_size) in enumerate(
+            zip(self.fft_sizes, self.hop_sizes, self.win_sizes)
+        ):
+            window = getattr(self, f"window_{i}")
+            if window.device != real.device:
+                window = window.to(real.device)
+            
+            mag_real = self._stft_magnitude(real, fft_size, hop_size, win_size, window)
+            mag_fake = self._stft_magnitude(generated, fft_size, hop_size, win_size, window)
+            
+            # Spectral Convergence: Frobenius norm ratio
+            sc_loss += torch.norm(mag_real - mag_fake, p="fro") / (torch.norm(mag_real, p="fro") + 1e-9)
+            
+            # Log Magnitude L1
+            log_mag_real = torch.log(mag_real.clamp(min=1e-5))
+            log_mag_fake = torch.log(mag_fake.clamp(min=1e-5))
+            mag_loss += F.l1_loss(log_mag_fake, log_mag_real)
+        
+        n = len(self.fft_sizes)
+        return sc_loss / n, mag_loss / n
+
+
 class MultiResolutionMelLoss(nn.Module):
     """
     Multi-Resolution Mel L1 Loss.
@@ -342,20 +431,18 @@ class AutoencoderLoss(nn.Module):
     """
     Повний loss для Speech Autoencoder training.
     
-    L_total = λ_recon × L_recon + λ_wave × L_wave + λ_adv × L_adv + λ_fm × L_fm
+    L_total = λ_sc × L_sc + λ_mag × L_mag + λ_mel × L_mel + λ_wave × L_wave + λ_adv × L_adv + λ_fm × L_fm
     
-    Default weights (з paper):
-    - λ_recon = 45
-    - λ_wave = 10 (NEW - for low frequency preservation)
-    - λ_adv = 1
-    - λ_fm = 0.1
+    UPDATED: Added Spectral Convergence Loss for better phase quality!
     
     Args:
-        lambda_recon: Reconstruction loss weight
-        lambda_wave: Waveform L1 loss weight (helps preserve low frequencies)
+        lambda_sc: Spectral Convergence loss weight (NEW - removes metallic sound)
+        lambda_mag: Log Magnitude loss weight (NEW)
+        lambda_mel: Mel L1 loss weight
+        lambda_wave: Waveform L1 loss weight
         lambda_adv: Adversarial loss weight
         lambda_fm: Feature matching loss weight
-        fft_sizes: FFT sizes for multi-resolution mel
+        fft_sizes: FFT sizes for multi-resolution
         sample_rate: Audio sample rate
         n_mels: Number of mel bins
         gan_type: Type of GAN loss
@@ -363,8 +450,10 @@ class AutoencoderLoss(nn.Module):
     
     def __init__(
         self,
-        lambda_recon: float = 45.0,
-        lambda_wave: float = 10.0,  # NEW
+        lambda_sc: float = 2.5,      # NEW - Spectral Convergence
+        lambda_mag: float = 2.5,     # NEW - Log Magnitude
+        lambda_mel: float = 45.0,    # Renamed from lambda_recon
+        lambda_wave: float = 10.0,
         lambda_adv: float = 1.0,
         lambda_fm: float = 0.1,
         fft_sizes: List[int] = [512, 1024, 2048],
@@ -374,11 +463,17 @@ class AutoencoderLoss(nn.Module):
     ):
         super().__init__()
         
-        self.lambda_recon = lambda_recon
-        self.lambda_wave = lambda_wave  # NEW
+        self.lambda_sc = lambda_sc
+        self.lambda_mag = lambda_mag
+        self.lambda_mel = lambda_mel
+        self.lambda_wave = lambda_wave
         self.lambda_adv = lambda_adv
         self.lambda_fm = lambda_fm
         
+        # NEW: Spectral Convergence Loss (removes metallic sound)
+        self.sc_loss = SpectralConvergenceLoss(fft_sizes=fft_sizes)
+        
+        # Mel Loss (for overall spectral shape)
         self.mel_loss = MultiResolutionMelLoss(
             fft_sizes=fft_sizes,
             sample_rate=sample_rate,
@@ -393,7 +488,8 @@ class AutoencoderLoss(nn.Module):
         generated_audio: torch.Tensor,
         disc_fake_outputs: List[torch.Tensor],
         real_features: List[List[torch.Tensor]],
-        fake_features: List[List[torch.Tensor]]
+        fake_features: List[List[torch.Tensor]],
+        use_adv: bool = True  # NEW: Option to disable adversarial during warmup
     ) -> Dict[str, torch.Tensor]:
         """
         Generator/Decoder loss.
@@ -404,6 +500,7 @@ class AutoencoderLoss(nn.Module):
             disc_fake_outputs: Discriminator outputs for generated audio
             real_features: Discriminator features for real audio
             fake_features: Discriminator features for generated audio
+            use_adv: Whether to use adversarial loss (False during warmup)
             
         Returns:
             Dict with loss components and total loss
@@ -413,30 +510,39 @@ class AutoencoderLoss(nn.Module):
         real_audio_crop = real_audio[..., :min_len]
         generated_audio_crop = generated_audio[..., :min_len]
         
-        # Reconstruction loss (mel)
-        l_recon = self.mel_loss(real_audio_crop, generated_audio_crop)
+        # NEW: Spectral Convergence + Log Magnitude Loss (removes metallic sound!)
+        l_sc, l_mag = self.sc_loss(real_audio_crop, generated_audio_crop)
         
-        # Waveform L1 loss (NEW - helps preserve low frequencies)
+        # Mel reconstruction loss
+        l_mel = self.mel_loss(real_audio_crop, generated_audio_crop)
+        
+        # Waveform L1 loss
         l_wave = F.l1_loss(generated_audio_crop, real_audio_crop)
         
-        # Adversarial loss
-        l_adv = self.gan_loss.generator_loss(disc_fake_outputs)
-        
-        # Feature matching loss
-        l_fm = self.fm_loss(real_features, fake_features)
+        # Adversarial + Feature Matching (can be disabled during warmup)
+        if use_adv and len(disc_fake_outputs) > 0:
+            l_adv = self.gan_loss.generator_loss(disc_fake_outputs)
+            l_fm = self.fm_loss(real_features, fake_features)
+        else:
+            l_adv = torch.tensor(0.0, device=real_audio.device)
+            l_fm = torch.tensor(0.0, device=real_audio.device)
         
         # Total loss
         total = (
-            self.lambda_recon * l_recon +
-            self.lambda_wave * l_wave +  # NEW
+            self.lambda_sc * l_sc +
+            self.lambda_mag * l_mag +
+            self.lambda_mel * l_mel +
+            self.lambda_wave * l_wave +
             self.lambda_adv * l_adv +
             self.lambda_fm * l_fm
         )
         
         return {
             "total": total,
-            "reconstruction": l_recon,
-            "waveform": l_wave,  # NEW
+            "spectral_convergence": l_sc,  # NEW
+            "log_magnitude": l_mag,         # NEW
+            "reconstruction": l_mel,        # Renamed for compat
+            "waveform": l_wave,
             "adversarial": l_adv,
             "feature_matching": l_fm
         }

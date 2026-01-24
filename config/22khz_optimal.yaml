@@ -127,12 +127,17 @@ train_autoencoder:
   validation_interval: 2500
   log_interval: 100
   
+  # NEW: Discriminator warmup - generator trains alone first
+  discriminator_start_steps: 2000  # Disc sleeps for 2000 steps, gen learns reconstruction
+  
   # Loss weights (CRITICAL for quality!)
   loss_weights:
-    reconstruction: 45.0      # Multi-resolution mel L1
-    waveform: 10.0            # Waveform L1 - FIXES METALLIC SOUND
-    adversarial: 1.0          # GAN loss
-    feature_matching: 0.1     # Discriminator feature matching
+    spectral_convergence: 2.5  # NEW - removes metallic sound
+    log_magnitude: 2.5         # NEW - phase quality
+    reconstruction: 45.0       # Multi-resolution mel L1
+    waveform: 10.0             # Waveform L1
+    adversarial: 1.0           # GAN loss
+    feature_matching: 0.1      # Discriminator feature matching
   
   # AMP
   amp:

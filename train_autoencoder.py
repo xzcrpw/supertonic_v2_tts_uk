@@ -161,14 +161,16 @@ def train_step(
     device: torch.device,
     use_amp: bool = True,
     iteration: int = 0,
-    disc_start_steps: int = 0  # NEW: Discriminator warmup
+    disc_start_steps: int = 0,
+    disc_crop_length: int = 4189  # Paper: 0.19s at 22050Hz
 ) -> Dict[str, float]:
     """
-    Один training step.
+    Один training step (SupertonicTTS paper style).
     
     Args:
         iteration: Current training iteration
         disc_start_steps: Steps before discriminator starts (warmup)
+        disc_crop_length: Random crop length for discriminator (paper: 0.19s)
     
     Returns:
         Dict з loss values
@@ -197,6 +199,14 @@ def train_step(
             min_len = min(audio.size(-1), generated_audio.size(-1))
             audio_trim = audio[..., :min_len]
             generated_trim = generated_audio[..., :min_len].detach()
+            
+            # Paper: "we randomly cropped segments of real and generated speech to 0.19s"
+            # Random crop for discriminator training
+            if disc_crop_length > 0 and min_len > disc_crop_length:
+                max_start = min_len - disc_crop_length
+                start_idx = torch.randint(0, max_start, (1,)).item()
+                audio_trim = audio_trim[..., start_idx:start_idx + disc_crop_length]
+                generated_trim = generated_trim[..., start_idx:start_idx + disc_crop_length]
             
             # Discriminator forward
             mpd_real_outputs, mpd_real_features = mpd(audio_trim)
@@ -513,8 +523,10 @@ def main(args):
     )
     
     if is_main:
-        print(f"Loss config: λ_mel={loss_weights.reconstruction}, λ_adv={loss_weights.adversarial}, λ_fm={loss_weights.feature_matching}")
-        print(f"Audio config: sample_rate={config.audio.sample_rate}, fft_sizes={list(ae_config.discriminator.mrd_fft_sizes)}, n_mels={config.audio.n_mels}")
+        print(f"Loss config: λ_recon={loss_weights.reconstruction}, λ_adv={loss_weights.adversarial}, λ_fm={loss_weights.feature_matching}")
+        disc_crop = config.train_autoencoder.get("disc_crop_length", 4189)
+        disc_crop_sec = disc_crop / config.audio.sample_rate
+        print(f"Disc crop: {disc_crop} samples ({disc_crop_sec:.3f}s) - Paper: 0.19s")
     
     # Optimizers
     optimizer_g = torch.optim.AdamW(
@@ -551,6 +563,10 @@ def main(args):
     
     # Get discriminator warmup steps from config
     disc_start_steps = config.train_autoencoder.get("discriminator_start_steps", 2000)
+    
+    # Paper: "we randomly cropped segments of real and generated speech to 0.19s"
+    # 0.19s at 22050Hz = 4189 samples
+    disc_crop_length = config.train_autoencoder.get("disc_crop_length", 4189)
     
     # Initialize beautiful logger
     logger = TrainingLogger(
@@ -595,7 +611,8 @@ def main(args):
                 device, 
                 use_amp=config.train_autoencoder.amp.enabled,
                 iteration=iteration,
-                disc_start_steps=disc_start_steps
+                disc_start_steps=disc_start_steps,
+                disc_crop_length=disc_crop_length
             )
             
             iteration += 1

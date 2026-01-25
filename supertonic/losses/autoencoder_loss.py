@@ -1,19 +1,35 @@
 """
 Autoencoder Loss - Multi-resolution reconstruction + GAN losses
 
-Loss formula:
-    L_total = λ_recon × L_recon + λ_adv × L_adv + λ_fm × L_fm
+Based on SupertonicTTS paper (arXiv:2503.23108v3)
 
-Де:
-- L_recon: Multi-resolution mel L1 loss (λ=45)
-- L_adv: Adversarial loss (λ=1)
-- L_fm: Feature matching L1 loss (λ=0.1)
+Paper Loss formula (Appendix B.1):
+    L_G = λ_recon × L_recon + λ_adv × L_adv + λ_fm × L_fm
 
-Discriminators:
+Where:
+- L_recon: Multi-resolution spectral L1 loss in mel domain
+          FFT sizes: [1024, 2048, 4096] @ 44.1kHz
+          Mel bands: [64, 128, 128] (different per resolution!)
+          λ_recon = 45
+
+- L_adv: LSGAN adversarial loss
+         L_adv(G;D) = E[(D(G(x)) - 1)^2]
+         λ_adv = 1
+
+- L_fm: Feature matching L1 loss
+        L_fm = (1/L) Σ ||phi_l(G(x)) - phi_l(x)||_1
+        λ_fm = 0.1
+
+Discriminators (paper uses VERY lightweight - Table 7):
 - MPD: Multi-Period Discriminator (periods [2, 3, 5, 7, 11])
-- MRD: Multi-Resolution Discriminator (FFT sizes [512, 1024, 2048])
+       Hidden sizes: [16, 64, 256, 512, 512, 1]
+- MRD: Multi-Resolution Discriminator (FFT [512, 1024, 2048])
+       All conv layers have hidden_channels = 16 (!)
 
-Референс: HiFi-GAN, Vocos, Supertonic v2 paper
+For 22kHz we scale FFT sizes proportionally:
+    [1024, 2048, 4096] @ 44.1kHz -> [512, 1024, 2048] @ 22kHz
+
+Reference: HiFi-GAN, Vocos, SupertonicTTS paper
 """
 
 import torch
@@ -27,7 +43,10 @@ class MultiResolutionSTFT(nn.Module):
     """
     Multi-Resolution STFT для обчислення mel spectrogram на різних scales.
     
-    Використовується для reconstruction loss.
+    Paper (Appendix B.1) використовує РІЗНІ n_mels для кожного FFT size:
+    - FFT 1024 -> 64 mels
+    - FFT 2048 -> 128 mels  
+    - FFT 4096 -> 128 mels
     """
     
     def __init__(
@@ -35,8 +54,8 @@ class MultiResolutionSTFT(nn.Module):
         fft_sizes: List[int] = [512, 1024, 2048],
         hop_sizes: Optional[List[int]] = None,
         win_sizes: Optional[List[int]] = None,
-        sample_rate: int = 44100,
-        n_mels: int = 80
+        sample_rate: int = 22050,
+        n_mels: Optional[List[int]] = None  # Paper: different per resolution!
     ):
         super().__init__()
         
@@ -44,18 +63,27 @@ class MultiResolutionSTFT(nn.Module):
         self.hop_sizes = hop_sizes or [s // 4 for s in fft_sizes]
         self.win_sizes = win_sizes or fft_sizes
         self.sample_rate = sample_rate
-        self.n_mels = n_mels
+        
+        # Paper uses different n_mels per resolution: [64, 128, 128]
+        if n_mels is None:
+            self.n_mels_list = [64, 128, 128]  # Paper default
+        elif isinstance(n_mels, int):
+            self.n_mels_list = [n_mels] * len(fft_sizes)
+        else:
+            self.n_mels_list = n_mels
         
         # Створюємо mel filterbanks для кожного resolution
         for i, (fft_size, hop_size, win_size) in enumerate(
             zip(self.fft_sizes, self.hop_sizes, self.win_sizes)
         ):
+            n_mels_i = self.n_mels_list[i] if i < len(self.n_mels_list) else self.n_mels_list[-1]
             mel_fb = self._create_mel_filterbank(
                 n_fft=fft_size,
-                n_mels=n_mels,
+                n_mels=n_mels_i,
                 sample_rate=sample_rate
             )
             self.register_buffer(f"mel_fb_{i}", mel_fb)
+            self.register_buffer(f"n_mels_{i}", torch.tensor(n_mels_i))
             
             # Hann window
             window = torch.hann_window(win_size)
@@ -256,24 +284,30 @@ class SpectralConvergenceLoss(nn.Module):
 
 class MultiResolutionMelLoss(nn.Module):
     """
-    Multi-Resolution Mel L1 Loss.
+    Multi-Resolution Mel L1 Loss (Paper Appendix B.1).
     
-    Обчислює L1 loss на mel spectrograms різних resolutions
-    для кращого покриття частотного спектру.
+    Paper configuration:
+    - FFT sizes: [1024, 2048, 4096] @ 44.1kHz
+    - Mel bands: [64, 128, 128] - DIFFERENT per resolution!
+    - Hop sizes: FFT/4
+    - Window: Hann, size = FFT size
     
-    Args:
-        fft_sizes: List of FFT sizes
-        sample_rate: Audio sample rate
-        n_mels: Number of mel bins
+    For 22kHz we scale FFT sizes by 0.5:
+    - FFT sizes: [512, 1024, 2048]
+    - Mel bands: [64, 128, 128]
     """
     
     def __init__(
         self,
-        fft_sizes: List[int] = [512, 1024, 2048],
-        sample_rate: int = 44100,
-        n_mels: int = 80
+        fft_sizes: List[int] = [512, 1024, 2048],  # Scaled for 22kHz
+        sample_rate: int = 22050,
+        n_mels: Optional[List[int]] = None  # Paper: [64, 128, 128]
     ):
         super().__init__()
+        
+        # Paper default: different n_mels per resolution
+        if n_mels is None:
+            n_mels = [64, 128, 128]
         
         self.stft = MultiResolutionSTFT(
             fft_sizes=fft_sizes,
@@ -429,44 +463,54 @@ class FeatureMatchingLoss(nn.Module):
 
 class AutoencoderLoss(nn.Module):
     """
-    Повний loss для Speech Autoencoder training (Supertonic-style).
+    Loss для Speech Autoencoder (точно як в SupertonicTTS paper).
     
-    L_total = λ_mel × L_mel + λ_adv × L_adv + λ_fm × L_fm
+    Paper formula (Appendix B.1):
+        L_G = λ_recon × L_recon + λ_adv × L_adv + λ_fm × L_fm
     
-    NOTE: WaveNeXt head doesn't need explicit spectral losses (SC/LogMag)
-    or waveform L1 - just Mel reconstruction + GAN is enough.
+    Where:
+        L_recon: Multi-resolution spectral L1 loss in mel domain
+        L_adv: LSGAN adversarial loss  
+        L_fm: Feature matching L1 loss
     
-    Args:
-        lambda_mel: Mel L1 loss weight (main reconstruction)
-        lambda_adv: Adversarial loss weight
-        lambda_fm: Feature matching loss weight (increase to reduce buzz)
-        fft_sizes: FFT sizes for multi-resolution mel
-        sample_rate: Audio sample rate
-        n_mels: Number of mel bins
-        gan_type: Type of GAN loss
+    Paper weights:
+        λ_recon = 45
+        λ_adv = 1
+        λ_fm = 0.1
+    
+    Paper config (for 44.1kHz):
+        FFT sizes: [1024, 2048, 4096]
+        Mel bands: [64, 128, 128]
+        
+    For 22kHz we scale FFT sizes by 0.5.
     """
     
     def __init__(
         self,
-        lambda_mel: float = 45.0,
-        lambda_adv: float = 1.0,
-        lambda_fm: float = 1.0,       # Increased from 0.1
-        fft_sizes: List[int] = [512, 1024, 2048],
-        sample_rate: int = 44100,
-        n_mels: int = 80,
+        lambda_recon: float = 45.0,   # Paper: λ_recon = 45
+        lambda_adv: float = 1.0,      # Paper: λ_adv = 1
+        lambda_fm: float = 0.1,       # Paper: λ_fm = 0.1
+        fft_sizes: List[int] = [512, 1024, 2048],  # Scaled for 22kHz
+        n_mels: List[int] = [64, 128, 128],        # Paper: different per resolution
+        sample_rate: int = 22050,
         gan_type: str = "lsgan",
-        # Legacy params (ignored, kept for config compat)
-        lambda_sc: float = 0.0,
-        lambda_mag: float = 0.0,
-        lambda_wave: float = 0.0,
+        # Legacy params (kept for config compat)
+        lambda_mel: float = None,     # Alias for lambda_recon
+        lambda_wave: float = None,    # Not used in paper
+        lambda_sc: float = None,
+        lambda_mag: float = None,
     ):
         super().__init__()
         
-        self.lambda_mel = lambda_mel
+        # Handle legacy param names
+        if lambda_mel is not None:
+            lambda_recon = lambda_mel
+        
+        self.lambda_recon = lambda_recon
         self.lambda_adv = lambda_adv
         self.lambda_fm = lambda_fm
         
-        # Mel Loss (main reconstruction objective)
+        # Mel Loss (paper's reconstruction objective)
         self.mel_loss = MultiResolutionMelLoss(
             fft_sizes=fft_sizes,
             sample_rate=sample_rate,
@@ -485,7 +529,9 @@ class AutoencoderLoss(nn.Module):
         use_adv: bool = True
     ) -> Dict[str, torch.Tensor]:
         """
-        Generator/Decoder loss.
+        Generator loss (Paper Appendix B.1).
+        
+        L_G = λ_recon × L_recon + λ_adv × L_adv + λ_fm × L_fm
         
         Args:
             real_audio: Real audio [B, T]
@@ -503,27 +549,29 @@ class AutoencoderLoss(nn.Module):
         real_audio_crop = real_audio[..., :min_len]
         generated_audio_crop = generated_audio[..., :min_len]
         
-        # Mel reconstruction loss (main objective)
-        l_mel = self.mel_loss(real_audio_crop, generated_audio_crop)
+        # L_recon: Multi-resolution mel L1 loss (paper's main objective)
+        l_recon = self.mel_loss(real_audio_crop, generated_audio_crop)
         
         # Adversarial + Feature Matching (can be disabled during warmup)
         if use_adv and len(disc_fake_outputs) > 0:
+            # L_adv: LSGAN loss
             l_adv = self.gan_loss.generator_loss(disc_fake_outputs)
+            # L_fm: Feature matching L1
             l_fm = self.fm_loss(real_features, fake_features)
         else:
             l_adv = torch.tensor(0.0, device=real_audio.device)
             l_fm = torch.tensor(0.0, device=real_audio.device)
         
-        # Total loss (simple: Mel + GAN + FM)
+        # Paper formula: L_G = λ_recon × L_recon + λ_adv × L_adv + λ_fm × L_fm
         total = (
-            self.lambda_mel * l_mel +
+            self.lambda_recon * l_recon +
             self.lambda_adv * l_adv +
             self.lambda_fm * l_fm
         )
         
         return {
             "total": total,
-            "reconstruction": l_mel,
+            "reconstruction": l_recon,
             "adversarial": l_adv,
             "feature_matching": l_fm
         }
@@ -553,27 +601,34 @@ class AutoencoderLoss(nn.Module):
 # ============================================================================
 
 def _test_losses():
-    """Тест loss functions."""
-    print("Testing Autoencoder Losses...")
+    """Тест loss functions (paper configuration)."""
+    print("Testing Autoencoder Losses (SupertonicTTS paper config)...")
     
     batch_size = 4
-    audio_len = 44100  # 1 second at 44.1kHz
+    audio_len = 22050  # 1 second at 22kHz
     
-    # Test multi-resolution STFT
+    # Test multi-resolution STFT with paper config
     stft = MultiResolutionSTFT(
-        fft_sizes=[512, 1024, 2048],
-        sample_rate=44100,
-        n_mels=80
+        fft_sizes=[512, 1024, 2048],  # Scaled for 22kHz
+        sample_rate=22050,
+        n_mels=[64, 128, 128]  # Paper: different per resolution
     )
     
     audio = torch.randn(batch_size, audio_len)
     mels = stft(audio)
     
     assert len(mels) == 3
-    print(f"  Multi-resolution STFT: {[m.shape for m in mels]} ✓")
+    print(f"  Multi-resolution STFT shapes: {[m.shape for m in mels]}")
+    print(f"    - FFT 512:  {mels[0].shape} (64 mels) ✓")
+    print(f"    - FFT 1024: {mels[1].shape} (128 mels) ✓")
+    print(f"    - FFT 2048: {mels[2].shape} (128 mels) ✓")
     
     # Test mel loss
-    mel_loss = MultiResolutionMelLoss()
+    mel_loss = MultiResolutionMelLoss(
+        fft_sizes=[512, 1024, 2048],
+        sample_rate=22050,
+        n_mels=[64, 128, 128]
+    )
     real = torch.randn(batch_size, audio_len)
     fake = torch.randn(batch_size, audio_len)
     
@@ -581,7 +636,7 @@ def _test_losses():
     assert loss.dim() == 0
     print(f"  Mel L1 loss: {loss.item():.4f} ✓")
     
-    # Test GAN loss
+    # Test GAN loss (LSGAN as in paper)
     gan_loss = GANLoss(loss_type="lsgan")
     real_out = [torch.randn(batch_size, 100) for _ in range(5)]
     fake_out = [torch.randn(batch_size, 100) for _ in range(5)]
@@ -590,7 +645,7 @@ def _test_losses():
     g_loss = gan_loss.generator_loss(fake_out)
     
     print(f"  Discriminator loss: {d_loss.item():.4f} ✓")
-    print(f"  Generator loss: {g_loss.item():.4f} ✓")
+    print(f"  Generator adv loss: {g_loss.item():.4f} ✓")
     
     # Test feature matching loss
     fm_loss = FeatureMatchingLoss()
@@ -600,11 +655,14 @@ def _test_losses():
     fm = fm_loss(real_features, fake_features)
     print(f"  Feature matching loss: {fm.item():.4f} ✓")
     
-    # Test full autoencoder loss
+    # Test full autoencoder loss with EXACT paper config
     ae_loss = AutoencoderLoss(
-        lambda_recon=45.0,
-        lambda_adv=1.0,
-        lambda_fm=0.1
+        lambda_recon=45.0,  # Paper: λ_recon = 45
+        lambda_adv=1.0,     # Paper: λ_adv = 1
+        lambda_fm=0.1,      # Paper: λ_fm = 0.1
+        fft_sizes=[512, 1024, 2048],
+        n_mels=[64, 128, 128],
+        sample_rate=22050
     )
     
     gen_losses = ae_loss.generator_loss(
@@ -615,15 +673,16 @@ def _test_losses():
         fake_features=fake_features
     )
     
+    print(f"\n  Paper loss formula: L_G = 45×L_recon + 1×L_adv + 0.1×L_fm")
     print(f"  Total generator loss: {gen_losses['total'].item():.4f}")
-    print(f"    - Reconstruction: {gen_losses['reconstruction'].item():.4f}")
-    print(f"    - Adversarial: {gen_losses['adversarial'].item():.4f}")
-    print(f"    - Feature matching: {gen_losses['feature_matching'].item():.4f}")
+    print(f"    - L_recon (mel):    {gen_losses['reconstruction'].item():.4f} × 45 = {gen_losses['reconstruction'].item() * 45:.4f}")
+    print(f"    - L_adv:            {gen_losses['adversarial'].item():.4f} × 1  = {gen_losses['adversarial'].item():.4f}")
+    print(f"    - L_fm:             {gen_losses['feature_matching'].item():.4f} × 0.1 = {gen_losses['feature_matching'].item() * 0.1:.4f}")
     
     disc_losses = ae_loss.discriminator_loss(real_out, fake_out)
     print(f"  Discriminator loss: {disc_losses['total'].item():.4f}")
     
-    print("All Autoencoder loss tests passed! ✓\n")
+    print("\nAll Autoencoder loss tests passed! ✓\n")
 
 
 if __name__ == "__main__":

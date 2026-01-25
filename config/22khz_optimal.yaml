@@ -1,15 +1,22 @@
 # ============================================================================
 # SUPERTONIC V2 TTS - 22kHz OPTIMAL CONFIGURATION
 # ============================================================================
-# Optimized for:
-#   - RTX PRO 6000 96GB (vast.ai $0.446/hr)
-#   - 22050Hz sample rate (TTS standard, no wasted compute on >11kHz)
-#   - Waveform L1 loss to preserve low frequencies (fixes metallic sound)
-#   - Maximal batch size for fastest convergence
+# Based on SupertonicTTS paper (arXiv:2503.23108v3)
 #
-# Expected training time (autoencoder):
-#   - ~1.2s/iteration with batch_size=32
-#   - 100k iterations = ~33 hours = ~$15
+# KEY DIFFERENCES FROM PAPER:
+#   - 22050Hz (paper: 44100Hz) - reduces compute, sufficient for TTS
+#   - Waveform L1 loss added - helps early training convergence
+#   - Smaller batch for better alignment learning (paper Fig.2 shows
+#     larger batch DEGRADES WER in early training!)
+#
+# Paper Loss Config:
+#   - L_recon: Multi-resolution Mel L1 with FFT [1024, 2048, 4096]
+#   - L_adv: LSGAN adversarial loss
+#   - L_fm: Feature matching L1
+#   - Weights: λ_recon=45, λ_adv=1, λ_fm=0.1
+#
+# Our additions:
+#   - Waveform L1 loss (λ=10) for faster phase convergence at 22kHz
 # ============================================================================
 
 # ========== AUDIO CONFIGURATION ==========
@@ -133,11 +140,21 @@ train_autoencoder:
   # Discriminator warmup - generator trains alone first
   discriminator_start_steps: 5000  # Gen needs time to learn WaveNeXt head
   
-  # Loss weights (Paper spec!)
+  # Loss weights - EXACT PAPER VALUES (Appendix B.1)
   loss_weights:
-    reconstruction: 45.0       # Paper: λ_recon=45
-    adversarial: 1.0           # Paper: λ_adv=1
-    feature_matching: 0.1      # Paper: λ_fm=0.1
+    reconstruction: 45.0       # Paper: λ_recon = 45
+    adversarial: 1.0           # Paper: λ_adv = 1
+    feature_matching: 0.1      # Paper: λ_fm = 0.1
+  
+  # Multi-resolution Mel Loss configuration
+  # Paper @ 44.1kHz: FFT [1024, 2048, 4096], Mels [64, 128, 128]
+  # Scaled for 22kHz: FFT sizes halved
+  loss_fft_sizes: [512, 1024, 2048]
+  loss_n_mels: [64, 128, 128]  # Paper: different per resolution!
+  
+  # Discriminator crop for adversarial training
+  # Paper: "we randomly cropped segments of real and generated speech to 0.19s"
+  disc_crop_length: 4189       # 0.19s at 22050Hz (paper spec)
   
   # AMP
   amp:

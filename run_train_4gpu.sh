@@ -191,6 +191,9 @@ run_training_loop() {
         log "INFO" "📝 Log file: ${CYAN}$log_file${NC}"
         echo ""
         
+        # Fix CUDA memory fragmentation (critical for long training!)
+        export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+        
         # Build command
         local cmd="torchrun --nproc_per_node=$NUM_GPUS --master_port=29500"
         cmd+=" train_autoencoder.py"

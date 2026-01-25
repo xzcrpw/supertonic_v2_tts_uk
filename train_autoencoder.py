@@ -248,9 +248,13 @@ def train_step(
     scaler.step(optimizer_g)
     scaler.update()
     
-    # Clean up intermediates (GPU tensors only)
+    # Clean up ALL intermediates to prevent fragmentation
     del audio, mel, latent, generated_audio, audio_trim, generated_trim
-    # NOTE: torch.cuda.empty_cache() removed - too slow, called every step!
+    if disc_active:
+        del mpd_real_features, mrd_real_features, real_features_detached
+        del fake_outputs, fake_features
+        if 'mpd_fake_outputs' in dir():
+            del mpd_fake_outputs, mrd_fake_outputs, mpd_fake_features, mrd_fake_features
     
     return {
         "d_loss": d_loss_val,  # Fixed: use d_loss_val (0 during warmup)

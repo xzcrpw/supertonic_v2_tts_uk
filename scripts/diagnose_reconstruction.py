@@ -29,28 +29,57 @@ from supertonic.models.speech_autoencoder import LatentEncoder, LatentDecoder, I
 from supertonic.data.preprocessing import AudioProcessor
 
 
+def strip_ddp_prefix(state_dict):
+    """Remove 'module.' prefix from DDP state dict keys."""
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith("module."):
+            new_state_dict[k[7:]] = v
+        else:
+            new_state_dict[k] = v
+    return new_state_dict
+
+
 def load_checkpoint_for_diagnosis(checkpoint_path: str, device: str = "cuda"):
     """Завантажує чекпоінт і створює моделі."""
     print(f"\n{'='*70}")
     print(f"ЗАВАНТАЖЕННЯ ЧЕКПОІНТА")
     print(f"{'='*70}")
     
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config = checkpoint.get("config", {})
     
+    # Strip DDP prefix from state dicts
+    encoder_state = strip_ddp_prefix(checkpoint["encoder"])
+    decoder_state = strip_ddp_prefix(checkpoint["decoder"])
+    
     # Detect params from weights
-    encoder_state = checkpoint["encoder"]
-    decoder_state = checkpoint["decoder"]
-    
     n_mels = encoder_state["input_conv.weight"].shape[1]
-    n_fft = decoder_state["istft_head.window"].shape[0]
     
-    # Guess hop_length
-    if n_fft == 1024:
+    # Check if using WaveNeXtHead or ISTFTHead
+    if "head.conv.weight" in decoder_state:
+        # WaveNeXtHead - detect hop_length from head.fc.weight
+        hop_length = decoder_state["head.fc.weight"].shape[0]
+        print(f"  ✓ Using WaveNeXtHead (hop_length={hop_length})")
+        use_wavnext = True
+    elif "istft_head.window" in decoder_state:
+        # Old ISTFTHead
+        n_fft = decoder_state["istft_head.window"].shape[0]
+        hop_length = n_fft // 4
+        print(f"  ⚠️  Using deprecated ISTFTHead (n_fft={n_fft})")
+        use_wavnext = False
+    else:
+        # Fallback - guess from config or defaults
         hop_length = 256
+        print(f"  ⚠️  Could not detect head type, assuming hop_length={hop_length}")
+        use_wavnext = True
+    
+    # Determine n_fft and sample_rate
+    if hop_length == 256:
+        n_fft = 1024
         sample_rate = 22050
     else:
-        hop_length = 512
+        n_fft = 2048
         sample_rate = 44100
     
     print(f"  n_fft: {n_fft}")

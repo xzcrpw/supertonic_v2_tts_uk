@@ -116,11 +116,11 @@ languages:
 
 # ========== TRAINING: AUTOENCODER (Stage 1) ==========
 train_autoencoder:
-  # Batch & segment settings
-  # 4s segment = less VRAM, so we can increase batch
-  batch_size: 56              # Per GPU (56×4=224 effective batch) - uses ~30GB VRAM
-  segment_length: 88200       # 4 seconds at 22050Hz (faster training, still good quality)
-  gradient_accumulation_steps: 1  # With 4 GPUs, effective batch = 224
+  # Batch size - PAPER: 128 total
+  # Fig.2 shows larger batch DEGRADES alignment in early training!
+  batch_size: 32              # Per GPU (32×4=128 effective batch) - EXACT paper value
+  segment_length: 88200       # 4 seconds at 22050Hz
+  gradient_accumulation_steps: 1
   
   # Optimizer - Paper uses lr=2e-4
   learning_rate: 2.0e-4       # Paper: "learning rate of 2×10⁻⁴"

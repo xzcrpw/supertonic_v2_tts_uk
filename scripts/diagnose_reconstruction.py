@@ -400,11 +400,21 @@ def diagnose_full_pipeline(checkpoint_path: str, audio_path: str, output_dir: st
     axes[2, 0].set_ylabel("Latent dim")
     axes[2, 0].colorbar = plt.colorbar(axes[2, 0].images[0], ax=axes[2, 0])
     
-    # 4. Magnitude spectrum (log scale)
-    mag_np = mag[0].cpu().numpy()
-    axes[2, 1].imshow(np.log10(mag_np.T + 1e-8), aspect='auto', origin='lower', cmap='magma')
-    axes[2, 1].set_title(f"Magnitude (log10, range: [{mag_np.min():.2f}, {mag_np.max():.2f}])")
-    axes[2, 1].set_ylabel("Freq bin")
+    # 4. Magnitude spectrum (log scale) - only if available (not for WaveNeXtHead)
+    if mag is not None:
+        mag_np = mag[0].cpu().numpy()
+        axes[2, 1].imshow(np.log10(mag_np.T + 1e-8), aspect='auto', origin='lower', cmap='magma')
+        axes[2, 1].set_title(f"Magnitude (log10, range: [{mag_np.min():.2f}, {mag_np.max():.2f}])")
+        axes[2, 1].set_ylabel("Freq bin")
+    else:
+        # WaveNeXtHead doesn't have magnitude - show waveform comparison instead
+        orig_np = audio.cpu().numpy()
+        recon_np = recon.cpu().numpy()
+        t = np.arange(min(len(orig_np), 5000))
+        axes[2, 1].plot(t, orig_np[:len(t)], alpha=0.7, linewidth=0.5, label='Original')
+        axes[2, 1].plot(t, recon_np[:len(t)], alpha=0.7, linewidth=0.5, label='Reconstructed')
+        axes[2, 1].set_title("Waveform comparison (first 5k samples)")
+        axes[2, 1].legend(loc='upper right')
     
     # 5. Audio before tanh
     audio_raw_np = audio_raw[0].cpu().numpy()

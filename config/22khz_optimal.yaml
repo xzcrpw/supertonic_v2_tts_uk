@@ -126,7 +126,7 @@ train_autoencoder:
   # 200k steps ≈ 300k paper steps - enough for good autoencoder
   total_iterations: 200000    # Budget-friendly, check quality at 50k/100k
   warmup_steps: 5000
-  checkpoint_interval: 5000   # Every 5k (save disk space)
+  checkpoint_interval: 1000   # Every 1k - don't lose progress!
   validation_interval: 10000  # Validate every 10k
   log_interval: 50            # Log every 50 steps for better monitoring
   

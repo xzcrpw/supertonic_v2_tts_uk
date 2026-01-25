@@ -77,9 +77,22 @@ log() {
 }
 
 find_latest_checkpoint() {
-    local checkpoint_dir="${OUTPUT_DIR}/checkpoints/autoencoder"
+    # Try multiple possible checkpoint locations
+    local checkpoint_dirs=(
+        "checkpoints/autoencoder"
+        "${OUTPUT_DIR}/checkpoints/autoencoder"
+        "outputs/autoencoder_4gpu/checkpoints/autoencoder"
+    )
     
-    if [[ ! -d "$checkpoint_dir" ]]; then
+    local checkpoint_dir=""
+    for dir in "${checkpoint_dirs[@]}"; do
+        if [[ -d "$dir" ]]; then
+            checkpoint_dir="$dir"
+            break
+        fi
+    done
+    
+    if [[ -z "$checkpoint_dir" ]]; then
         echo ""
         return
     fi

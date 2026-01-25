@@ -143,10 +143,10 @@ train_autoencoder:
     dtype: bfloat16           # Best for Ampere+ GPUs
   
   # DataLoader - Optimized for 128 CPU / 516 GB RAM
-  num_workers: 24              # Per GPU (24×4=96 workers, leaves 32 cores for system)
+  num_workers: 16              # Per GPU (16×4=64 workers)
   pin_memory: true
-  cache_audio: true            # Cache ALL audio in RAM (516GB is plenty!)
-  prefetch_factor: 8           # Aggressive prefetching with so much RAM
+  cache_audio: true            # Cache ALL audio in RAM (~45GB dataset fits easily)
+  prefetch_factor: 6           # Good prefetching
 
 # ========== TRAINING: TEXT-TO-LATENT (Stage 2) ==========
 train_tts:

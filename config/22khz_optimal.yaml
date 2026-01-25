@@ -121,11 +121,13 @@ train_autoencoder:
     betas: [0.8, 0.99]        # AdamW betas from HiFi-GAN
     weight_decay: 0.01
   
-  # Schedule
-  total_iterations: 1500000   # Paper: "1.5M iterations"
+  # Schedule - OPTIMIZED FOR BUDGET
+  # Paper: 1.5M @ batch128. We have batch192 (1.5× more efficient)
+  # 200k steps ≈ 300k paper steps - enough for good autoencoder
+  total_iterations: 200000    # Budget-friendly, check quality at 50k/100k
   warmup_steps: 5000
-  checkpoint_interval: 1000   # Every 1k iterations (auto-resume friendly)
-  validation_interval: 5000   # Validate every 5k
+  checkpoint_interval: 5000   # Every 5k (save disk space)
+  validation_interval: 10000  # Validate every 10k
   log_interval: 50            # Log every 50 steps for better monitoring
   
   # Discriminator warmup - generator trains alone first
@@ -142,11 +144,11 @@ train_autoencoder:
     enabled: true
     dtype: bfloat16           # Best for Ampere+ GPUs
   
-  # DataLoader - Optimized for 128 CPU / 516 GB RAM
-  num_workers: 12              # Per GPU (12×4=48 workers)
+  # DataLoader - Conservative settings to prevent OOM
+  num_workers: 8               # Per GPU (8×4=32 workers) - safe for RAM
   pin_memory: true
-  cache_audio: true            # Cache ALL audio in RAM (~45GB dataset fits easily)
-  prefetch_factor: 6           # Good prefetching
+  cache_audio: false           # DISABLED - workers duplicate cache = OOM
+  prefetch_factor: 4           # Moderate prefetching
 
 # ========== TRAINING: TEXT-TO-LATENT (Stage 2) ==========
 train_tts:

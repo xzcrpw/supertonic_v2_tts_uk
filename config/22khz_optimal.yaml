@@ -145,10 +145,10 @@ train_autoencoder:
     dtype: bfloat16           # Best for Ampere+ GPUs
   
   # DataLoader - Balance speed vs memory
-  num_workers: 14               # Per GPU (4×4=16 workers) - minimal for stability
+  num_workers: 20               # Per GPU (4×4=16 workers) - minimal for stability
   pin_memory: true
   cache_audio: true           # DISABLED - workers duplicate cache = OOM
-  prefetch_factor: 6           # Low prefetch to reduce memory
+  prefetch_factor: 8           # Low prefetch to reduce memory
 
 # ========== TRAINING: TEXT-TO-LATENT (Stage 2) ==========
 train_tts:

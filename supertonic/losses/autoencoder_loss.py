@@ -373,6 +373,11 @@ class GANLoss(nn.Module):
         """
         Discriminator loss.
         
+        Paper (Appendix B.1, Eq. 5):
+        L_adv(D;G) = E[(D(G(x)) + 1)² + (D(x) - 1)²]
+        
+        This uses -1/+1 labels (real=+1, fake=-1), NOT 0/1!
+        
         Args:
             real_outputs: List of discriminator outputs for real samples
             fake_outputs: List of discriminator outputs for fake samples
@@ -384,7 +389,9 @@ class GANLoss(nn.Module):
         
         for real_out, fake_out in zip(real_outputs, fake_outputs):
             if self.loss_type == "lsgan":
-                loss += torch.mean((real_out - 1) ** 2) + torch.mean(fake_out ** 2)
+                # Paper Eq. 5: (D(x) - 1)² + (D(G(x)) + 1)²
+                # real → +1, fake → -1
+                loss += torch.mean((real_out - 1) ** 2) + torch.mean((fake_out + 1) ** 2)
             elif self.loss_type == "hinge":
                 loss += torch.mean(F.relu(1 - real_out)) + torch.mean(F.relu(1 + fake_out))
             else:  # vanilla

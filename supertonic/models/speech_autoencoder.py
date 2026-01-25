@@ -491,8 +491,9 @@ class LatentDecoder(nn.Module):
         # WaveNeXt head expects [B, hidden, T] (channel-first)
         audio = self.head(x)   # [B, T * hop_length]
         
-        # Clamp output to valid audio range
-        audio = torch.tanh(audio)
+        # NOTE: NO tanh! WaveNeXtHead learns the output range directly.
+        # tanh was causing amplitude reduction (50%) and metallic artifacts.
+        # The network learns proper output scaling through reconstruction loss.
 
         return audio
 

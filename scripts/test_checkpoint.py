@@ -356,16 +356,24 @@ def plot_comparison(original: torch.Tensor,
 
 
 def list_checkpoints(checkpoint_dir: str = "checkpoints/autoencoder") -> List[str]:
-    """List available checkpoints."""
+    """List available checkpoints, sorted by step number."""
     checkpoint_dir = Path(checkpoint_dir)
     if not checkpoint_dir.exists():
         return []
     
-    checkpoints = []
-    for f in sorted(checkpoint_dir.glob("*.pt")):
-        checkpoints.append(str(f))
+    checkpoints = list(checkpoint_dir.glob("*.pt"))
     
-    return checkpoints
+    # Sort by step number (extract number from filename)
+    def get_step(path):
+        name = path.stem  # checkpoint_5000 -> checkpoint_5000
+        parts = name.split("_")
+        for p in reversed(parts):
+            if p.isdigit():
+                return int(p)
+        return 0
+    
+    checkpoints = sorted(checkpoints, key=get_step)
+    return [str(cp) for cp in checkpoints]
 
 
 def list_audio_files(data_dir: str = "data", limit: int = 20) -> List[str]:

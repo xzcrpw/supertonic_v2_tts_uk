@@ -411,7 +411,7 @@ def main(args):
         pin_memory=True,
         collate_fn=autoencoder_collate_fn,
         drop_last=True,
-        persistent_workers=False,  # DISABLED - workers leak memory over time!
+        persistent_workers=num_workers > 0,  # Keep workers alive (use few workers to limit leak)
         prefetch_factor=prefetch if num_workers > 0 else None
     )
     
@@ -422,7 +422,7 @@ def main(args):
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=autoencoder_collate_fn,
-        persistent_workers=False,  # DISABLED - workers leak memory!
+        persistent_workers=num_workers > 0,  # Keep workers alive
         prefetch_factor=prefetch if num_workers > 0 else None
     )
     

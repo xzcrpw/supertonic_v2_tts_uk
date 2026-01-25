@@ -147,7 +147,7 @@ train_autoencoder:
   # DataLoader - Balance speed vs memory
   num_workers: 4               # Per GPU (4×4=16 workers) - minimal for stability
   pin_memory: true
-  cache_audio: false           # DISABLED - workers duplicate cache = OOM
+  cache_audio: true           # DISABLED - workers duplicate cache = OOM
   prefetch_factor: 2           # Low prefetch to reduce memory
 
 # ========== TRAINING: TEXT-TO-LATENT (Stage 2) ==========

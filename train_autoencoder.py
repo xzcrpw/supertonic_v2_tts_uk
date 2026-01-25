@@ -22,6 +22,7 @@ import sys
 import argparse
 import time
 import gc
+import psutil
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -36,6 +37,22 @@ import torch.distributed as dist
 
 from omegaconf import OmegaConf
 import wandb
+
+# RAM cleanup threshold (in GB)
+RAM_CLEANUP_THRESHOLD_GB = 300
+
+def check_and_cleanup_ram(force: bool = False) -> bool:
+    """Check RAM usage and cleanup if above threshold.
+    
+    Returns True if cleanup was performed.
+    """
+    mem = psutil.virtual_memory()
+    used_gb = mem.used / (1024 ** 3)
+    
+    if force or used_gb > RAM_CLEANUP_THRESHOLD_GB:
+        gc.collect()
+        return True
+    return False
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -610,10 +627,13 @@ def main(args):
                 )
                 logger.log_checkpoint(iteration, str(ckpt_path))
             
-            # Periodic memory cleanup (every 500 steps)
-            if iteration % 500 == 0:
-                gc.collect()
-                torch.cuda.empty_cache()
+            # RAM cleanup - check every 100 steps, cleanup if > 300 GB
+            if iteration % 100 == 0:
+                if check_and_cleanup_ram():
+                    torch.cuda.empty_cache()
+                    if is_main and iteration % 500 == 0:
+                        mem = psutil.virtual_memory()
+                        print(f"🧹 RAM cleanup: {mem.used / (1024**3):.1f} GB used")
         
         epoch += 1
     

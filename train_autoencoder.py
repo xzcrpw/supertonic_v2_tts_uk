@@ -21,6 +21,7 @@ import os
 import sys
 import argparse
 import time
+import gc
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -28,7 +29,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import autocast  # Updated API (torch 2.0+)
+from torch.cuda.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 
@@ -168,7 +170,7 @@ def train_step(
     if disc_active:
         optimizer_d.zero_grad(set_to_none=True)
         
-        with autocast(enabled=use_amp, dtype=torch.bfloat16):
+        with autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
             # Encode → Decode (no grad for D step)
             with torch.no_grad():
                 latent = encoder(mel)
@@ -204,7 +206,7 @@ def train_step(
     # ==================== Generator Step ====================
     optimizer_g.zero_grad(set_to_none=True)
     
-    with autocast(enabled=use_amp, dtype=torch.bfloat16):
+    with autocast('cuda', enabled=use_amp, dtype=torch.bfloat16):
         # Encode → Decode (with gradients this time)
         latent = encoder(mel)
         generated_audio = decoder(latent)
@@ -246,9 +248,9 @@ def train_step(
     scaler.step(optimizer_g)
     scaler.update()
     
-    # Clean up
+    # Clean up intermediates (GPU tensors only)
     del audio, mel, latent, generated_audio, audio_trim, generated_trim
-    torch.cuda.empty_cache()
+    # NOTE: torch.cuda.empty_cache() removed - too slow, called every step!
     
     return {
         "d_loss": d_loss_val,  # Fixed: use d_loss_val (0 during warmup)
@@ -409,7 +411,7 @@ def main(args):
         pin_memory=True,
         collate_fn=autoencoder_collate_fn,
         drop_last=True,
-        persistent_workers=num_workers > 0,  # Keep workers alive between epochs
+        persistent_workers=False,  # DISABLED - workers leak memory over time!
         prefetch_factor=prefetch if num_workers > 0 else None
     )
     
@@ -420,7 +422,7 @@ def main(args):
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=autoencoder_collate_fn,
-        persistent_workers=num_workers > 0,
+        persistent_workers=False,  # DISABLED - workers leak memory!
         prefetch_factor=prefetch if num_workers > 0 else None
     )
     
@@ -603,6 +605,11 @@ def main(args):
                     OmegaConf.to_container(config)
                 )
                 logger.log_checkpoint(iteration, str(ckpt_path))
+            
+            # Periodic memory cleanup (every 500 steps)
+            if iteration % 500 == 0:
+                gc.collect()
+                torch.cuda.empty_cache()
         
         epoch += 1
     

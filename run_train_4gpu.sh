@@ -3,25 +3,15 @@
 #  🔊 SUPERTONIC v2 - Multi-GPU Training Script (nohup version)
 #═══════════════════════════════════════════════════════════════════════════════
 #
-#  Features:
-#    ✅ Survives terminal disconnect (nohup)
-#    ✅ Auto-restart on crash from last checkpoint
-#    ✅ Beautiful logging with timestamps
-#    ✅ GPU monitoring
-#
 #  Usage:
 #    ./run_train_4gpu.sh              # Start training in background
-#    ./run_train_4gpu.sh --start      # Same as above
 #    ./run_train_4gpu.sh --stop       # Stop training
 #    ./run_train_4gpu.sh --status     # Check status
 #    ./run_train_4gpu.sh --logs       # Tail the log file
-#    ./run_train_4gpu.sh --attach     # Tail logs (alias for --logs)
 #
 #  After starting, you can safely close the terminal!
 #
 #═══════════════════════════════════════════════════════════════════════════════
-
-set -e
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Configuration
@@ -34,7 +24,6 @@ NUM_GPUS=4
 MAX_RESTARTS=100
 RESTART_DELAY=30
 
-# PID and log files
 PID_FILE=".training.pid"
 MAIN_LOG="training.log"
 
@@ -43,7 +32,6 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-WHITE='\033[1;37m'
 NC='\033[0m'
 BOLD='\033[1m'
 
@@ -51,23 +39,12 @@ BOLD='\033[1m'
 # Helper Functions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-log() {
-    local level=$1
-    local msg=$2
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "${CYAN}[$timestamp]${NC} ${GREEN}[$level]${NC} $msg"
-}
-
 find_latest_checkpoint() {
-    local checkpoint_dirs=(
-        "checkpoints/autoencoder"
-        "${OUTPUT_DIR}/checkpoints/autoencoder"
-    )
-    
-    for dir in "${checkpoint_dirs[@]}"; do
+    local dirs="checkpoints/autoencoder ${OUTPUT_DIR}/checkpoints/autoencoder"
+    for dir in $dirs; do
         if [[ -d "$dir" ]]; then
             local latest=$(ls -1 "$dir"/checkpoint_*.pt 2>/dev/null | \
-                           grep -oP 'checkpoint_\K[0-9]+' | \
+                           sed 's/.*checkpoint_\([0-9]*\).*/\1/' | \
                            sort -n | tail -1)
             if [[ -n "$latest" ]]; then
                 echo "${dir}/checkpoint_${latest}.pt"
@@ -75,48 +52,27 @@ find_latest_checkpoint() {
             fi
         fi
     done
-    echo ""
-}
-
-get_checkpoint_iteration() {
-    local checkpoint=$1
-    if [[ -n "$checkpoint" ]]; then
-        echo "$checkpoint" | grep -oP 'checkpoint_\K[0-9]+' || echo "0"
-    else
-        echo "0"
-    fi
 }
 
 is_running() {
-    if [[ -f "$PID_FILE" ]]; then
-        local pid=$(cat "$PID_FILE")
-        if kill -0 "$pid" 2>/dev/null; then
-            return 0
-        fi
-    fi
-    return 1
+    [[ -f "$PID_FILE" ]] && kill -0 "$(cat $PID_FILE)" 2>/dev/null
 }
 
 show_gpu_status() {
-    echo -e "\n${WHITE}GPU Status:${NC}"
+    echo -e "\n${CYAN}GPU Status:${NC}"
     nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu \
                --format=csv,noheader,nounits 2>/dev/null | \
     while IFS=',' read -r idx mem_used mem_total util; do
-        local mem_pct=$((100 * mem_used / mem_total))
-        local bar=""
-        for ((i=0; i<20; i++)); do
-            if ((i < mem_pct / 5)); then bar+="█"; else bar+="░"; fi
-        done
-        echo -e "  GPU $idx: [${GREEN}${bar}${NC}] ${mem_used}/${mem_total}MB (${util}%)"
+        local pct=$((100 * mem_used / mem_total))
+        printf "  GPU %s: %5d/%5dMB (%2d%%)\n" "$idx" "$mem_used" "$mem_total" "$pct"
     done
-    echo ""
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Training Loop (runs in background via nohup)
+# Training Loop (called with --loop flag)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-training_loop() {
+run_training_loop() {
     local restart_count=0
     
     mkdir -p "$LOG_DIR"
@@ -132,25 +88,23 @@ training_loop() {
     echo "🔊 SUPERTONIC v2 - Training Started"
     echo "═══════════════════════════════════════════════════════════════"
     date
-    echo ""
     
     while [[ $restart_count -lt $MAX_RESTARTS ]]; do
         local checkpoint=$(find_latest_checkpoint)
-        local iteration=$(get_checkpoint_iteration "$checkpoint")
-        local log_file="${LOG_DIR}/train_$(date '+%Y%m%d_%H%M%S').log"
+        local iteration=0
+        [[ -n "$checkpoint" ]] && iteration=$(echo "$checkpoint" | sed 's/.*checkpoint_\([0-9]*\).*/\1/')
+        
+        local run_log="${LOG_DIR}/train_$(date '+%Y%m%d_%H%M%S').log"
         
         echo ""
         echo "═══════════════════════════════════════════════════════════════"
-        echo "Training Run #$((restart_count + 1)) - $(date)"
-        echo "═══════════════════════════════════════════════════════════════"
-        
+        echo "Run #$((restart_count + 1)) - $(date)"
         if [[ -n "$checkpoint" ]]; then
             echo "📂 Resuming from: $checkpoint (step $iteration)"
         else
-            echo "🆕 Starting fresh training"
+            echo "🆕 Starting fresh"
         fi
-        echo "📝 Run log: $log_file"
-        echo ""
+        echo "═══════════════════════════════════════════════════════════════"
         
         # Build command
         local cmd="torchrun --nproc_per_node=$NUM_GPUS --master_port=29500"
@@ -158,40 +112,30 @@ training_loop() {
         cmd+=" --config $CONFIG_FILE"
         cmd+=" --data_dir $DATA_DIR"
         cmd+=" --output_dir $OUTPUT_DIR"
+        [[ -n "$checkpoint" ]] && cmd+=" --resume $checkpoint"
         
-        if [[ -n "$checkpoint" ]]; then
-            cmd+=" --resume $checkpoint"
-        fi
-        
-        echo "🚀 Running: $cmd"
+        echo "🚀 $cmd"
         echo ""
         
-        # Run training
+        # Run
         set +e
-        $cmd 2>&1 | tee -a "$log_file"
+        $cmd 2>&1 | tee -a "$run_log"
         local exit_code=${PIPESTATUS[0]}
         set -e
         
         if [[ $exit_code -eq 0 ]]; then
-            echo ""
-            echo "✅ Training completed successfully!"
+            echo "✅ Training completed!"
             break
-        else
-            restart_count=$((restart_count + 1))
-            echo ""
-            echo "⚠️  Training crashed (exit code: $exit_code)"
-            echo "🔄 Restarting in ${RESTART_DELAY}s... (attempt $restart_count/$MAX_RESTARTS)"
-            sleep $RESTART_DELAY
         fi
+        
+        restart_count=$((restart_count + 1))
+        echo "⚠️ Crashed (exit $exit_code). Restart $restart_count/$MAX_RESTARTS in ${RESTART_DELAY}s..."
+        sleep $RESTART_DELAY
     done
     
-    if [[ $restart_count -ge $MAX_RESTARTS ]]; then
-        echo "❌ Max restarts reached. Giving up."
-    fi
-    
-    # Cleanup PID file
+    [[ $restart_count -ge $MAX_RESTARTS ]] && echo "❌ Max restarts reached."
     rm -f "$PID_FILE"
-    echo "Training loop ended at $(date)"
+    echo "Ended at $(date)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -200,110 +144,82 @@ training_loop() {
 
 cmd_start() {
     if is_running; then
-        echo -e "${YELLOW}⚠️  Training already running (PID: $(cat $PID_FILE))${NC}"
-        echo ""
-        echo "Commands:"
-        echo "  ./run_train_4gpu.sh --logs    # Watch progress"
-        echo "  ./run_train_4gpu.sh --stop    # Stop training"
+        echo -e "${YELLOW}⚠️ Already running (PID: $(cat $PID_FILE))${NC}"
+        echo "  ./run_train_4gpu.sh --logs  # Watch"
+        echo "  ./run_train_4gpu.sh --stop  # Stop"
         exit 1
     fi
     
-    echo -e "${CYAN}"
-    echo "╔═══════════════════════════════════════════════════════════════════════════╗"
-    echo "║   🔊 SUPERTONIC v2 - Ukrainian TTS Training                               ║"
-    echo "║   GPUs: ${NUM_GPUS}× RTX 5090 | nohup mode (survives disconnect)                ║"
-    echo "╚═══════════════════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
+    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║  🔊 SUPERTONIC v2 - Ukrainian TTS Training                ║${NC}"
+    echo -e "${CYAN}║  ${NUM_GPUS}× GPU | nohup mode (survives disconnect)            ║${NC}"
+    echo -e "${CYAN}╚═══════════════════════════════════════════════════════════╝${NC}"
     
     show_gpu_status
     
     local checkpoint=$(find_latest_checkpoint)
     if [[ -n "$checkpoint" ]]; then
-        local iteration=$(get_checkpoint_iteration "$checkpoint")
-        log "INFO" "📂 Will resume from: ${YELLOW}$checkpoint${NC} (step $iteration)"
+        local iter=$(echo "$checkpoint" | sed 's/.*checkpoint_\([0-9]*\).*/\1/')
+        echo -e "\n📂 Will resume from: ${YELLOW}$checkpoint${NC} (step $iter)"
     else
-        log "INFO" "🆕 Will start fresh training"
+        echo -e "\n🆕 Will start fresh training"
     fi
     
-    echo ""
-    log "INFO" "🚀 Starting training in background..."
+    echo -e "\n🚀 Starting in background..."
     
-    # Start in background with nohup
-    nohup bash -c "$(declare -f training_loop find_latest_checkpoint get_checkpoint_iteration); training_loop" \
-        > "$MAIN_LOG" 2>&1 &
-    
+    # Start THIS script with --loop flag via nohup
+    nohup bash "$0" --loop > "$MAIN_LOG" 2>&1 &
     echo $! > "$PID_FILE"
     
-    echo ""
-    log "INFO" "✅ Training started (PID: $(cat $PID_FILE))"
-    echo ""
-    echo -e "${GREEN}${BOLD}🔒 You can now safely close this terminal!${NC}"
-    echo ""
-    echo "Commands:"
-    echo "  ./run_train_4gpu.sh --logs    # Watch progress"
-    echo "  ./run_train_4gpu.sh --status  # Check status"
-    echo "  ./run_train_4gpu.sh --stop    # Stop training"
-    echo "  tail -f $MAIN_LOG             # Same as --logs"
-    echo ""
+    sleep 1
+    
+    if is_running; then
+        echo -e "\n${GREEN}${BOLD}✅ Started (PID: $(cat $PID_FILE))${NC}"
+        echo -e "\n${GREEN}🔒 You can safely close this terminal!${NC}\n"
+        echo "Commands:"
+        echo "  ./run_train_4gpu.sh --logs    # Watch progress"
+        echo "  ./run_train_4gpu.sh --status  # Check status"
+        echo "  ./run_train_4gpu.sh --stop    # Stop"
+    else
+        echo -e "\n${RED}❌ Failed to start. Check $MAIN_LOG${NC}"
+        cat "$MAIN_LOG"
+    fi
 }
 
 cmd_stop() {
-    if ! is_running; then
-        echo -e "${YELLOW}⚠️  Training is not running${NC}"
-        # Try to kill any orphaned processes anyway
-        pkill -f "torchrun.*train_autoencoder" 2>/dev/null || true
-        pkill -f "train_autoencoder.py" 2>/dev/null || true
-        rm -f "$PID_FILE"
-        return
+    echo "🛑 Stopping..."
+    
+    if [[ -f "$PID_FILE" ]]; then
+        kill "$(cat $PID_FILE)" 2>/dev/null || true
     fi
-    
-    local pid=$(cat "$PID_FILE")
-    log "INFO" "🛑 Stopping training (PID: $pid)..."
-    
-    # Kill the main process and its children
-    kill "$pid" 2>/dev/null || true
-    pkill -P "$pid" 2>/dev/null || true
     pkill -f "torchrun.*train_autoencoder" 2>/dev/null || true
     pkill -f "train_autoencoder.py" 2>/dev/null || true
     
-    sleep 2
     rm -f "$PID_FILE"
-    
-    log "INFO" "✅ Training stopped"
+    sleep 1
+    echo "✅ Stopped"
 }
 
 cmd_status() {
     if is_running; then
-        local pid=$(cat "$PID_FILE")
-        echo -e "${GREEN}✅ Training is RUNNING (PID: $pid)${NC}"
-        echo ""
+        echo -e "${GREEN}✅ RUNNING (PID: $(cat $PID_FILE))${NC}"
         show_gpu_status
-        echo "Last 5 lines of log:"
-        echo "─────────────────────────────────────────────────────────────"
-        tail -5 "$MAIN_LOG" 2>/dev/null || echo "(no log yet)"
-        echo ""
+        echo -e "\nLast 5 lines:"
+        tail -5 "$MAIN_LOG" 2>/dev/null || echo "(no log)"
     else
-        echo -e "${RED}❌ Training is NOT running${NC}"
+        echo -e "${RED}❌ NOT running${NC}"
         rm -f "$PID_FILE" 2>/dev/null
-        
-        # Show last checkpoint
-        local checkpoint=$(find_latest_checkpoint)
-        if [[ -n "$checkpoint" ]]; then
-            local iteration=$(get_checkpoint_iteration "$checkpoint")
-            echo ""
-            echo "Last checkpoint: $checkpoint (step $iteration)"
-        fi
+        local ckpt=$(find_latest_checkpoint)
+        [[ -n "$ckpt" ]] && echo "Last checkpoint: $ckpt"
     fi
 }
 
 cmd_logs() {
     if [[ ! -f "$MAIN_LOG" ]]; then
-        echo -e "${YELLOW}⚠️  No log file found${NC}"
+        echo "No log file yet"
         exit 1
     fi
-    
-    echo -e "${CYAN}📝 Tailing $MAIN_LOG (Ctrl+C to exit)${NC}"
-    echo ""
+    echo -e "${CYAN}📝 Tailing $MAIN_LOG (Ctrl+C to exit)${NC}\n"
     tail -f "$MAIN_LOG"
 }
 
@@ -312,6 +228,10 @@ cmd_logs() {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 case "${1:-}" in
+    --loop)
+        # Internal: called by nohup
+        run_training_loop
+        ;;
     --stop)
         cmd_stop
         ;;
@@ -326,6 +246,5 @@ case "${1:-}" in
         ;;
     *)
         echo "Usage: $0 [--start|--stop|--status|--logs]"
-        exit 1
         ;;
 esac

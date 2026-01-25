@@ -1,21 +1,23 @@
 #!/bin/bash
 #═══════════════════════════════════════════════════════════════════════════════
-#  🔊 SUPERTONIC v2 - Multi-GPU Training Script
+#  🔊 SUPERTONIC v2 - Multi-GPU Training Script (nohup version)
 #═══════════════════════════════════════════════════════════════════════════════
 #
 #  Features:
+#    ✅ Survives terminal disconnect (nohup)
 #    ✅ Auto-restart on crash from last checkpoint
-#    ✅ tmux session management
 #    ✅ Beautiful logging with timestamps
 #    ✅ GPU monitoring
-#    ✅ Crash detection & recovery
 #
 #  Usage:
-#    ./run_train_4gpu.sh              # Start training in tmux
-#    ./run_train_4gpu.sh --attach     # Start and attach to tmux
+#    ./run_train_4gpu.sh              # Start training in background
+#    ./run_train_4gpu.sh --start      # Same as above
 #    ./run_train_4gpu.sh --stop       # Stop training
 #    ./run_train_4gpu.sh --status     # Check status
-#    ./run_train_4gpu.sh --logs       # View logs
+#    ./run_train_4gpu.sh --logs       # Tail the log file
+#    ./run_train_4gpu.sh --attach     # Tail logs (alias for --logs)
+#
+#  After starting, you can safely close the terminal!
 #
 #═══════════════════════════════════════════════════════════════════════════════
 
@@ -24,152 +26,113 @@ set -e
 # ═══════════════════════════════════════════════════════════════════════════════
 # Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
-SESSION_NAME="supertonic_train"
 CONFIG_FILE="config/22khz_optimal.yaml"
 DATA_DIR="data/audio"
 OUTPUT_DIR="outputs/autoencoder_4gpu"
 LOG_DIR="logs"
 NUM_GPUS=4
-MAX_RESTARTS=100  # Maximum auto-restarts before giving up
-RESTART_DELAY=30  # Seconds to wait before restart
+MAX_RESTARTS=100
+RESTART_DELAY=30
 
-# Colors for beautiful output
+# PID and log files
+PID_FILE=".training.pid"
+MAIN_LOG="training.log"
+
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 BOLD='\033[1m'
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helper Functions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-print_banner() {
-    echo -e "${CYAN}"
-    echo "╔═══════════════════════════════════════════════════════════════════════════╗"
-    echo "║                                                                           ║"
-    echo "║   🔊 ${WHITE}SUPERTONIC v2${CYAN} - Ukrainian TTS Training                            ║"
-    echo "║                                                                           ║"
-    echo "║   ${YELLOW}Paper:${CYAN} arXiv:2503.23108v3                                             ║"
-    echo "║   ${YELLOW}Stage:${CYAN} Speech Autoencoder (WaveNeXt Head)                            ║"
-    echo "║   ${YELLOW}GPUs:${CYAN}  ${NUM_GPUS}× RTX 5090 (32GB each)                                       ║"
-    echo "║                                                                           ║"
-    echo "╚═══════════════════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
-}
-
 log() {
     local level=$1
     local msg=$2
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
-    case $level in
-        "INFO")  echo -e "${CYAN}[$timestamp]${NC} ${GREEN}[INFO]${NC}  $msg" ;;
-        "WARN")  echo -e "${CYAN}[$timestamp]${NC} ${YELLOW}[WARN]${NC}  $msg" ;;
-        "ERROR") echo -e "${CYAN}[$timestamp]${NC} ${RED}[ERROR]${NC} $msg" ;;
-        "START") echo -e "${CYAN}[$timestamp]${NC} ${MAGENTA}[START]${NC} $msg" ;;
-        "GPU")   echo -e "${CYAN}[$timestamp]${NC} ${BLUE}[GPU]${NC}   $msg" ;;
-    esac
+    echo -e "${CYAN}[$timestamp]${NC} ${GREEN}[$level]${NC} $msg"
 }
 
 find_latest_checkpoint() {
-    # Try multiple possible checkpoint locations
     local checkpoint_dirs=(
         "checkpoints/autoencoder"
         "${OUTPUT_DIR}/checkpoints/autoencoder"
-        "outputs/autoencoder_4gpu/checkpoints/autoencoder"
     )
     
-    local checkpoint_dir=""
     for dir in "${checkpoint_dirs[@]}"; do
         if [[ -d "$dir" ]]; then
-            checkpoint_dir="$dir"
-            break
+            local latest=$(ls -1 "$dir"/checkpoint_*.pt 2>/dev/null | \
+                           grep -oP 'checkpoint_\K[0-9]+' | \
+                           sort -n | tail -1)
+            if [[ -n "$latest" ]]; then
+                echo "${dir}/checkpoint_${latest}.pt"
+                return
+            fi
         fi
     done
-    
-    if [[ -z "$checkpoint_dir" ]]; then
-        echo ""
-        return
-    fi
-    
-    # Find the latest checkpoint by iteration number
-    local latest=$(ls -1 "$checkpoint_dir"/checkpoint_*.pt 2>/dev/null | \
-                   grep -oP 'checkpoint_\K[0-9]+' | \
-                   sort -n | \
-                   tail -1)
-    
-    if [[ -n "$latest" ]]; then
-        echo "${checkpoint_dir}/checkpoint_${latest}.pt"
-    else
-        echo ""
-    fi
+    echo ""
 }
 
 get_checkpoint_iteration() {
     local checkpoint=$1
     if [[ -n "$checkpoint" ]]; then
-        echo "$checkpoint" | grep -oP 'checkpoint_\K[0-9]+'
+        echo "$checkpoint" | grep -oP 'checkpoint_\K[0-9]+' || echo "0"
     else
         echo "0"
     fi
 }
 
+is_running() {
+    if [[ -f "$PID_FILE" ]]; then
+        local pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 show_gpu_status() {
-    log "GPU" "${WHITE}GPU Status:${NC}"
-    nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu \
-               --format=csv,noheader,nounits | \
-    while IFS=',' read -r idx name mem_used mem_total util temp; do
+    echo -e "\n${WHITE}GPU Status:${NC}"
+    nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu \
+               --format=csv,noheader,nounits 2>/dev/null | \
+    while IFS=',' read -r idx mem_used mem_total util; do
         local mem_pct=$((100 * mem_used / mem_total))
-        local mem_bar=""
+        local bar=""
         for ((i=0; i<20; i++)); do
-            if ((i < mem_pct / 5)); then
-                mem_bar+="█"
-            else
-                mem_bar+="░"
-            fi
+            if ((i < mem_pct / 5)); then bar+="█"; else bar+="░"; fi
         done
-        echo -e "      ${YELLOW}GPU $idx${NC}: $name | ${GREEN}${mem_bar}${NC} ${mem_used}/${mem_total}MB | ${util}% | ${temp}°C"
+        echo -e "  GPU $idx: [${GREEN}${bar}${NC}] ${mem_used}/${mem_total}MB (${util}%)"
     done
-}
-
-kill_training() {
-    log "WARN" "Killing any existing training processes..."
-    
-    # Kill by session
-    tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
-    
-    # Kill any orphaned torchrun processes
-    pkill -f "torchrun.*train_autoencoder" 2>/dev/null || true
-    pkill -f "train_autoencoder.py" 2>/dev/null || true
-    
-    sleep 2
-    log "INFO" "Cleanup complete"
+    echo ""
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Main Training Loop (runs inside tmux)
+# Training Loop (runs in background via nohup)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-run_training_loop() {
+training_loop() {
     local restart_count=0
     
-    # Create log directory
     mkdir -p "$LOG_DIR"
     
-    # Environment setup
+    # Environment
     export CUDA_VISIBLE_DEVICES=0,1,2,3
     export NCCL_DEBUG=WARN
     export NCCL_IB_DISABLE=1
     export PYTHONUNBUFFERED=1
-    export WANDB_CONSOLE=off  # Let our logger handle it
+    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
     
-    print_banner
-    show_gpu_status
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "🔊 SUPERTONIC v2 - Training Started"
+    echo "═══════════════════════════════════════════════════════════════"
+    date
+    echo ""
     
     while [[ $restart_count -lt $MAX_RESTARTS ]]; do
         local checkpoint=$(find_latest_checkpoint)
@@ -177,22 +140,17 @@ run_training_loop() {
         local log_file="${LOG_DIR}/train_$(date '+%Y%m%d_%H%M%S').log"
         
         echo ""
-        log "START" "${WHITE}═══════════════════════════════════════════════════════════════${NC}"
-        log "START" "${BOLD}Starting Training Run #$((restart_count + 1))${NC}"
-        log "START" "${WHITE}═══════════════════════════════════════════════════════════════${NC}"
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "Training Run #$((restart_count + 1)) - $(date)"
+        echo "═══════════════════════════════════════════════════════════════"
         
         if [[ -n "$checkpoint" ]]; then
-            log "INFO" "📂 Resuming from checkpoint: ${YELLOW}$checkpoint${NC}"
-            log "INFO" "📊 Iteration: ${GREEN}${iteration}${NC} / 1,500,000"
+            echo "📂 Resuming from: $checkpoint (step $iteration)"
         else
-            log "INFO" "🆕 Starting fresh training (no checkpoint found)"
+            echo "🆕 Starting fresh training"
         fi
-        
-        log "INFO" "📝 Log file: ${CYAN}$log_file${NC}"
+        echo "📝 Run log: $log_file"
         echo ""
-        
-        # Fix CUDA memory fragmentation (critical for long training!)
-        export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
         
         # Build command
         local cmd="torchrun --nproc_per_node=$NUM_GPUS --master_port=29500"
@@ -205,159 +163,169 @@ run_training_loop() {
             cmd+=" --resume $checkpoint"
         fi
         
-        # Run training with logging
-        log "INFO" "🚀 Launching: ${CYAN}$cmd${NC}"
+        echo "🚀 Running: $cmd"
         echo ""
         
-        # Execute and capture exit code
+        # Run training
         set +e
         $cmd 2>&1 | tee -a "$log_file"
         local exit_code=${PIPESTATUS[0]}
         set -e
         
-        echo ""
-        
         if [[ $exit_code -eq 0 ]]; then
-            log "INFO" "✅ ${GREEN}Training completed successfully!${NC}"
+            echo ""
+            echo "✅ Training completed successfully!"
             break
         else
-            log "ERROR" "❌ Training crashed with exit code: $exit_code"
-            
             restart_count=$((restart_count + 1))
-            
-            if [[ $restart_count -lt $MAX_RESTARTS ]]; then
-                log "WARN" "🔄 Auto-restart in ${RESTART_DELAY}s... (attempt $restart_count/$MAX_RESTARTS)"
-                
-                # Kill any zombie processes
-                pkill -f "train_autoencoder.py" 2>/dev/null || true
-                
-                # Show GPU status before restart
-                show_gpu_status
-                
-                # Wait before restart
-                sleep $RESTART_DELAY
-            else
-                log "ERROR" "💀 Max restarts ($MAX_RESTARTS) reached. Giving up."
-                exit 1
-            fi
+            echo ""
+            echo "⚠️  Training crashed (exit code: $exit_code)"
+            echo "🔄 Restarting in ${RESTART_DELAY}s... (attempt $restart_count/$MAX_RESTARTS)"
+            sleep $RESTART_DELAY
         fi
     done
     
-    log "INFO" "🎉 Training session ended."
+    if [[ $restart_count -ge $MAX_RESTARTS ]]; then
+        echo "❌ Max restarts reached. Giving up."
+    fi
+    
+    # Cleanup PID file
+    rm -f "$PID_FILE"
+    echo "Training loop ended at $(date)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Command Line Interface
+# Commands
+# ═══════════════════════════════════════════════════════════════════════════════
+
+cmd_start() {
+    if is_running; then
+        echo -e "${YELLOW}⚠️  Training already running (PID: $(cat $PID_FILE))${NC}"
+        echo ""
+        echo "Commands:"
+        echo "  ./run_train_4gpu.sh --logs    # Watch progress"
+        echo "  ./run_train_4gpu.sh --stop    # Stop training"
+        exit 1
+    fi
+    
+    echo -e "${CYAN}"
+    echo "╔═══════════════════════════════════════════════════════════════════════════╗"
+    echo "║   🔊 SUPERTONIC v2 - Ukrainian TTS Training                               ║"
+    echo "║   GPUs: ${NUM_GPUS}× RTX 5090 | nohup mode (survives disconnect)                ║"
+    echo "╚═══════════════════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+    
+    show_gpu_status
+    
+    local checkpoint=$(find_latest_checkpoint)
+    if [[ -n "$checkpoint" ]]; then
+        local iteration=$(get_checkpoint_iteration "$checkpoint")
+        log "INFO" "📂 Will resume from: ${YELLOW}$checkpoint${NC} (step $iteration)"
+    else
+        log "INFO" "🆕 Will start fresh training"
+    fi
+    
+    echo ""
+    log "INFO" "🚀 Starting training in background..."
+    
+    # Start in background with nohup
+    nohup bash -c "$(declare -f training_loop find_latest_checkpoint get_checkpoint_iteration); training_loop" \
+        > "$MAIN_LOG" 2>&1 &
+    
+    echo $! > "$PID_FILE"
+    
+    echo ""
+    log "INFO" "✅ Training started (PID: $(cat $PID_FILE))"
+    echo ""
+    echo -e "${GREEN}${BOLD}🔒 You can now safely close this terminal!${NC}"
+    echo ""
+    echo "Commands:"
+    echo "  ./run_train_4gpu.sh --logs    # Watch progress"
+    echo "  ./run_train_4gpu.sh --status  # Check status"
+    echo "  ./run_train_4gpu.sh --stop    # Stop training"
+    echo "  tail -f $MAIN_LOG             # Same as --logs"
+    echo ""
+}
+
+cmd_stop() {
+    if ! is_running; then
+        echo -e "${YELLOW}⚠️  Training is not running${NC}"
+        # Try to kill any orphaned processes anyway
+        pkill -f "torchrun.*train_autoencoder" 2>/dev/null || true
+        pkill -f "train_autoencoder.py" 2>/dev/null || true
+        rm -f "$PID_FILE"
+        return
+    fi
+    
+    local pid=$(cat "$PID_FILE")
+    log "INFO" "🛑 Stopping training (PID: $pid)..."
+    
+    # Kill the main process and its children
+    kill "$pid" 2>/dev/null || true
+    pkill -P "$pid" 2>/dev/null || true
+    pkill -f "torchrun.*train_autoencoder" 2>/dev/null || true
+    pkill -f "train_autoencoder.py" 2>/dev/null || true
+    
+    sleep 2
+    rm -f "$PID_FILE"
+    
+    log "INFO" "✅ Training stopped"
+}
+
+cmd_status() {
+    if is_running; then
+        local pid=$(cat "$PID_FILE")
+        echo -e "${GREEN}✅ Training is RUNNING (PID: $pid)${NC}"
+        echo ""
+        show_gpu_status
+        echo "Last 5 lines of log:"
+        echo "─────────────────────────────────────────────────────────────"
+        tail -5 "$MAIN_LOG" 2>/dev/null || echo "(no log yet)"
+        echo ""
+    else
+        echo -e "${RED}❌ Training is NOT running${NC}"
+        rm -f "$PID_FILE" 2>/dev/null
+        
+        # Show last checkpoint
+        local checkpoint=$(find_latest_checkpoint)
+        if [[ -n "$checkpoint" ]]; then
+            local iteration=$(get_checkpoint_iteration "$checkpoint")
+            echo ""
+            echo "Last checkpoint: $checkpoint (step $iteration)"
+        fi
+    fi
+}
+
+cmd_logs() {
+    if [[ ! -f "$MAIN_LOG" ]]; then
+        echo -e "${YELLOW}⚠️  No log file found${NC}"
+        exit 1
+    fi
+    
+    echo -e "${CYAN}📝 Tailing $MAIN_LOG (Ctrl+C to exit)${NC}"
+    echo ""
+    tail -f "$MAIN_LOG"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
 case "${1:-}" in
     --stop)
-        print_banner
-        kill_training
-        log "INFO" "Training stopped."
+        cmd_stop
         ;;
-        
     --status)
-        print_banner
-        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-            log "INFO" "✅ Training session is ${GREEN}RUNNING${NC}"
-            echo ""
-            
-            # Show checkpoint info
-            checkpoint=$(find_latest_checkpoint)
-            iteration=$(get_checkpoint_iteration "$checkpoint")
-            if [[ -n "$checkpoint" ]]; then
-                local total=1500000
-                local pct=$((100 * iteration / total))
-                log "INFO" "📊 Progress: ${GREEN}${iteration}${NC} / ${total} (${pct}%)"
-            fi
-            
-            echo ""
-            show_gpu_status
-        else
-            log "WARN" "⚪ Training session is ${YELLOW}NOT RUNNING${NC}"
-        fi
+        cmd_status
         ;;
-        
-    --logs)
-        print_banner
-        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-            tmux attach-session -t "$SESSION_NAME"
-        else
-            log "WARN" "No active session. Showing latest log file..."
-            latest_log=$(ls -t "$LOG_DIR"/train_*.log 2>/dev/null | head -1)
-            if [[ -n "$latest_log" ]]; then
-                tail -f "$latest_log"
-            else
-                log "ERROR" "No log files found"
-            fi
-        fi
+    --logs|--attach)
+        cmd_logs
         ;;
-        
-    --attach)
-        print_banner
-        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-            log "INFO" "Attaching to existing session..."
-            tmux attach-session -t "$SESSION_NAME"
-        else
-            log "INFO" "Starting new training session and attaching..."
-            kill_training
-            tmux new-session -d -s "$SESSION_NAME" "bash $0 --run-loop"
-            sleep 2
-            tmux attach-session -t "$SESSION_NAME"
-        fi
+    --start|"")
+        cmd_start
         ;;
-        
-    --run-loop)
-        # Internal: called by tmux
-        cd "$(dirname "$0")"
-        run_training_loop
-        ;;
-        
-    ""|--start)
-        print_banner
-        
-        # Check for existing session
-        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-            log "WARN" "Training session already exists!"
-            log "INFO" "Use ${CYAN}./run_train_4gpu.sh --attach${NC} to view"
-            log "INFO" "Use ${CYAN}./run_train_4gpu.sh --stop${NC} to stop"
-            exit 1
-        fi
-        
-        kill_training
-        
-        log "INFO" "🚀 Starting training in tmux session: ${CYAN}$SESSION_NAME${NC}"
-        
-        # Start tmux session
-        tmux new-session -d -s "$SESSION_NAME" "bash $0 --run-loop"
-        
-        sleep 2
-        
-        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-            log "INFO" "✅ Training started successfully!"
-            echo ""
-            log "INFO" "📺 ${WHITE}Commands:${NC}"
-            echo -e "      ${CYAN}./run_train_4gpu.sh --attach${NC}  - View training output"
-            echo -e "      ${CYAN}./run_train_4gpu.sh --status${NC}  - Check progress"
-            echo -e "      ${CYAN}./run_train_4gpu.sh --stop${NC}    - Stop training"
-            echo -e "      ${CYAN}./run_train_4gpu.sh --logs${NC}    - Follow logs"
-            echo ""
-            log "INFO" "💡 Tip: Press ${YELLOW}Ctrl+B${NC} then ${YELLOW}D${NC} to detach from tmux"
-        else
-            log "ERROR" "Failed to start training session"
-            exit 1
-        fi
-        ;;
-        
     *)
-        echo "Usage: $0 [--start|--stop|--status|--attach|--logs]"
-        echo ""
-        echo "  --start   Start training in background (default)"
-        echo "  --attach  Start and attach to training session"
-        echo "  --stop    Stop training"
-        echo "  --status  Show training status and progress"
-        echo "  --logs    Attach to session or tail logs"
+        echo "Usage: $0 [--start|--stop|--status|--logs]"
         exit 1
         ;;
 esac

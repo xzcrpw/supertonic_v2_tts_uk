@@ -69,6 +69,7 @@ class TrainingLogger:
         
         self.start_time = time.time()
         self.last_log_time = time.time()
+        self.start_iteration = 0  # For accurate it/s after resume
         self.history = MetricsHistory()
         
         self.console = Console() if RICH_AVAILABLE and self.is_main else None
@@ -153,7 +154,7 @@ class TrainingLogger:
         
         # Calculate stats
         elapsed = current_time - self.start_time
-        steps_done = max(1, iteration)
+        steps_done = max(1, iteration - self.start_iteration)  # Steps since start/resume
         steps_per_sec = steps_done / elapsed if elapsed > 0 else 0
         remaining_steps = self.total_iterations - iteration
         eta_seconds = remaining_steps / steps_per_sec if steps_per_sec > 0 else 0
@@ -255,6 +256,10 @@ class TrainingLogger:
         """Log checkpoint resume."""
         if not self.is_main:
             return
+        
+        # CRITICAL: Record start iteration for accurate it/s calculation
+        self.start_iteration = iteration
+        self.start_time = time.time()  # Reset timer on resume
         
         if self.console:
             self.console.print(

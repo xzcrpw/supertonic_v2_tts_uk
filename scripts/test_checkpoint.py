@@ -392,6 +392,131 @@ def list_audio_files(data_dir: str = "data", limit: int = 20) -> List[str]:
     return audio_files
 
 
+def discover_datasets(data_dir: str = "data/audio/audio") -> dict:
+    """
+    Discover available datasets and speakers.
+    Returns: {dataset_name: [speaker_dirs] or None if flat}
+    """
+    base_dir = Path(data_dir)
+    if not base_dir.exists():
+        # Try alternative path
+        base_dir = Path("data/audio")
+        if not base_dir.exists():
+            return {}
+    
+    datasets = {}
+    
+    for item in base_dir.iterdir():
+        if item.is_dir() and not item.name.startswith('.'):
+            # Check if this dataset has speaker subdirectories
+            subdirs = [d for d in item.iterdir() if d.is_dir() and not d.name.startswith('.')]
+            
+            # Check if subdirs contain audio or are speaker folders
+            if subdirs:
+                # Check first subdir for audio files
+                first_subdir = subdirs[0]
+                has_audio = any(first_subdir.glob("*.wav")) or any(first_subdir.glob("*.flac"))
+                if has_audio:
+                    # These are speaker directories
+                    datasets[item.name] = [d.name for d in sorted(subdirs)]
+                else:
+                    # Nested structure, treat as flat
+                    datasets[item.name] = None
+            else:
+                # Flat dataset (audio files directly in folder)
+                datasets[item.name] = None
+    
+    return datasets
+
+
+def list_audio_interactive(data_dir: str = "data/audio/audio", limit: int = 40) -> Optional[str]:
+    """
+    Interactive audio file selection with dataset/speaker hierarchy.
+    Returns selected audio path or None.
+    """
+    datasets = discover_datasets(data_dir)
+    
+    if not datasets:
+        print("   ❌ No datasets found!")
+        return None
+    
+    # Step 1: Select dataset
+    print("\n   📁 AVAILABLE DATASETS:")
+    dataset_list = sorted(datasets.keys())
+    for i, ds in enumerate(dataset_list):
+        speakers = datasets[ds]
+        if speakers:
+            print(f"      [{i}] {ds}/ ({len(speakers)} speakers: {', '.join(speakers[:3])}{'...' if len(speakers) > 3 else ''})")
+        else:
+            print(f"      [{i}] {ds}/")
+    
+    ds_input = input("\n   Select dataset [number]: ").strip()
+    if not ds_input.isdigit() or int(ds_input) >= len(dataset_list):
+        print("   ❌ Invalid selection")
+        return None
+    
+    selected_dataset = dataset_list[int(ds_input)]
+    speakers = datasets[selected_dataset]
+    dataset_path = Path(data_dir) / selected_dataset
+    
+    # Step 2: Select speaker (if applicable)
+    if speakers:
+        print(f"\n   🎤 SPEAKERS in {selected_dataset}:")
+        for i, sp in enumerate(speakers):
+            # Count files
+            sp_path = dataset_path / sp
+            file_count = len(list(sp_path.glob("*.wav")))
+            print(f"      [{i}] {sp} ({file_count} files)")
+        
+        sp_input = input("\n   Select speaker [number]: ").strip()
+        if not sp_input.isdigit() or int(sp_input) >= len(speakers):
+            print("   ❌ Invalid selection")
+            return None
+        
+        selected_speaker = speakers[int(sp_input)]
+        audio_dir = dataset_path / selected_speaker
+    else:
+        audio_dir = dataset_path
+    
+    # Step 3: List and select audio files
+    audio_files = sorted(audio_dir.glob("*.wav"))[:limit]
+    
+    if not audio_files:
+        # Try flac
+        audio_files = sorted(audio_dir.glob("*.flac"))[:limit]
+    
+    if not audio_files:
+        print(f"   ❌ No audio files found in {audio_dir}")
+        return None
+    
+    print(f"\n   🎵 AUDIO FILES ({len(audio_files)} shown, limit={limit}):")
+    for i, af in enumerate(audio_files):
+        print(f"      [{i}] {af.name}")
+    
+    # Option for random selection
+    print(f"\n      [r] Random file from this folder")
+    print(f"      [q] Cancel")
+    
+    file_input = input("\n   Select file [number/r/q]: ").strip().lower()
+    
+    if file_input == 'q':
+        return None
+    elif file_input == 'r':
+        import random
+        # Get all files, not just first N
+        all_files = list(audio_dir.glob("*.wav"))
+        if not all_files:
+            all_files = list(audio_dir.glob("*.flac"))
+        selected = random.choice(all_files)
+        print(f"   🎲 Random: {selected.name}")
+        return str(selected)
+    elif file_input.isdigit() and int(file_input) < len(audio_files):
+        return str(audio_files[int(file_input)])
+    else:
+        print("   ❌ Invalid selection")
+        return None
+
+
 def interactive_menu():
     """Interactive menu for checkpoint testing."""
     print("\n" + "="*70)
@@ -421,7 +546,7 @@ def interactive_menu():
         print("📋 MENU:")
         print("   1. List checkpoints")
         print("   2. Load checkpoint")
-        print("   3. List test audio files")
+        print("   3. Browse audio (dataset → speaker → file)")
         print("   4. Test reconstruction")
         print("   5. Compare two checkpoints")
         print("   6. Batch test (multiple files)")
@@ -480,25 +605,32 @@ def interactive_menu():
                 traceback.print_exc()
                 
         elif choice == "3":
-            audio_files = list_audio_files()
-            if not audio_files:
-                print("   ❌ No audio files found in data/")
-            else:
-                print(f"\n   🎵 Found {len(audio_files)} audio files (showing first 20):")
-                for i, af in enumerate(audio_files[:20]):
-                    print(f"      [{i}] {Path(af).name}")
+            # Interactive dataset/speaker/file selection
+            selected_audio = list_audio_interactive(limit=40)
+            if selected_audio:
+                # Store for use in option 4
+                last_selected_audio = selected_audio
+                print(f"\n   ✅ Selected: {selected_audio}")
+                print(f"   💡 Use option 4 to test reconstruction, or enter path directly")
                     
         elif choice == "4":
             if encoder is None:
                 print("   ❌ Load a checkpoint first (option 2)")
                 continue
             
-            audio_path = input("   Enter audio path (or index from list): ").strip()
+            print("\n   Options:")
+            print("      [i] Interactive selection (dataset → speaker → file)")
+            print("      [p] Enter path directly")
+            audio_mode = input("   Choose [i/p]: ").strip().lower()
+            
+            if audio_mode == 'i':
+                audio_path = list_audio_interactive(limit=40)
+                if not audio_path:
+                    continue
+            else:
+                audio_path = input("   Enter audio path: ").strip()
             
             try:
-                if audio_path.isdigit():
-                    audio_files = list_audio_files()
-                    audio_path = audio_files[int(audio_path)]
                 
                 sample_rate = audio_params["sample_rate"]
                 

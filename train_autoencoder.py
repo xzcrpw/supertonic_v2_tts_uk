@@ -185,6 +185,7 @@ def train_step(
     d_loss_val = 0.0
     mpd_real_features = []
     mrd_real_features = []
+    disc_crop_start = None  # Save crop index for generator step
     
     if disc_active:
         optimizer_d.zero_grad(set_to_none=True)
@@ -201,12 +202,12 @@ def train_step(
             generated_trim = generated_audio[..., :min_len].detach()
             
             # Paper: "we randomly cropped segments of real and generated speech to 0.19s"
-            # Random crop for discriminator training
+            # Random crop for discriminator training - save index for generator step!
             if disc_crop_length > 0 and min_len > disc_crop_length:
                 max_start = min_len - disc_crop_length
-                start_idx = torch.randint(0, max_start, (1,)).item()
-                audio_trim = audio_trim[..., start_idx:start_idx + disc_crop_length]
-                generated_trim = generated_trim[..., start_idx:start_idx + disc_crop_length]
+                disc_crop_start = torch.randint(0, max_start, (1,)).item()
+                audio_trim = audio_trim[..., disc_crop_start:disc_crop_start + disc_crop_length]
+                generated_trim = generated_trim[..., disc_crop_start:disc_crop_start + disc_crop_length]
             
             # Discriminator forward
             mpd_real_outputs, mpd_real_features = mpd(audio_trim)
@@ -249,8 +250,14 @@ def train_step(
         real_features_detached = []
         
         if disc_active:
-            mpd_fake_outputs, mpd_fake_features = mpd(generated_trim)
-            mrd_fake_outputs, mrd_fake_features = mrd(generated_trim)
+            # Apply same crop as discriminator step for feature matching!
+            if disc_crop_start is not None and disc_crop_length > 0:
+                generated_disc = generated_trim[..., disc_crop_start:disc_crop_start + disc_crop_length]
+            else:
+                generated_disc = generated_trim
+            
+            mpd_fake_outputs, mpd_fake_features = mpd(generated_disc)
+            mrd_fake_outputs, mrd_fake_features = mrd(generated_disc)
             
             fake_outputs = mpd_fake_outputs + mrd_fake_outputs
             fake_features = mpd_fake_features + mrd_fake_features

@@ -3,20 +3,17 @@
 # ============================================================================
 # Based on SupertonicTTS paper (arXiv:2503.23108v3)
 #
-# KEY DIFFERENCES FROM PAPER:
-#   - 22050Hz (paper: 44100Hz) - reduces compute, sufficient for TTS
-#   - Waveform L1 loss added - helps early training convergence
-#   - Smaller batch for better alignment learning (paper Fig.2 shows
-#     larger batch DEGRADES WER in early training!)
+# Differences from paper (44.1kHz):
+#   - 22050Hz sample rate - reduces compute, sufficient for TTS
+#   - FFT sizes scaled by 0.5: [512, 1024, 2048] instead of [1024, 2048, 4096]
 #
-# Paper Loss Config:
-#   - L_recon: Multi-resolution Mel L1 with FFT [1024, 2048, 4096]
-#   - L_adv: LSGAN adversarial loss
-#   - L_fm: Feature matching L1
-#   - Weights: λ_recon=45, λ_adv=1, λ_fm=0.1
-#
-# Our additions:
-#   - Waveform L1 loss (λ=10) for faster phase convergence at 22kHz
+# Paper training config (Section 4.2):
+#   - Batch size: 128
+#   - Learning rate: 2×10⁻⁴
+#   - Iterations: 1.5M (we use 200k for budget)
+#   - Disc crop: 0.19s
+#   - Loss weights: λ_recon=45, λ_adv=1, λ_fm=0.1
+#   - Mel bands: [64, 128, 128] per FFT resolution
 # ============================================================================
 
 # ========== AUDIO CONFIGURATION ==========
@@ -25,7 +22,7 @@ audio:
   n_fft: 1024                 # Adjusted for 22kHz (46.4ms window)
   hop_length: 256             # 11.6ms hop - same timing as 44.1kHz/512
   win_length: 1024
-  n_mels: 100                 # Standard for TTS (80-128 typical)
+  n_mels: 100                 # Standard for 22kHz TTS (paper uses 228 @ 44.1kHz)
   mel_fmin: 20.0
   mel_fmax: 11025.0           # Nyquist limit for 22kHz
 
@@ -34,7 +31,7 @@ model:
   autoencoder:
     # Encoder: mel(100) → hidden(512) → latent(24)
     encoder:
-      input_dim: 100          # n_mels
+      input_dim: 100          # n_mels (scaled for 22kHz)
       hidden_dim: 512
       output_dim: 24          # latent dimension (paper spec)
       num_blocks: 10          # 10 ConvNeXt blocks (paper spec)
@@ -59,7 +56,7 @@ model:
     # Discriminators (HiFi-GAN style)
     discriminator:
       mpd_periods: [2, 3, 5, 7, 11]
-      mrd_fft_sizes: [256, 512, 1024]  # Adjusted for 22kHz
+      mrd_fft_sizes: [512, 1024, 2048]  # Paper: [1024, 2048, 4096] halved for 22kHz
   
   # Text-to-Latent (Stage 2)
   text_to_latent:

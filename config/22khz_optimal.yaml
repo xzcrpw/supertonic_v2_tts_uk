@@ -227,9 +227,9 @@ optimization:
 
 # ========== PATHS ==========
 paths:
-  data_dir: data/audio
-  manifest_train: data/audio/manifests/train.json
-  manifest_val: data/audio/manifests/val.json
+  data_dir: data
+  manifest_train: data/manifests/train.json
+  manifest_val: data/manifests/val.json
   checkpoint_dir: checkpoints
   log_dir: logs
   sample_dir: samples
@@ -248,8 +248,8 @@ training:
 
 # ========== DATA CONSTRAINTS ==========
 data:
-  train_manifest: data/audio/manifests/train.json
-  val_manifest: data/audio/manifests/val.json
+  train_manifest: data/manifests/train.json
+  val_manifest: data/manifests/val.json
   min_audio_duration: 0.5     # Skip very short clips
   max_audio_duration: 15.0    # Skip very long clips
   max_text_length: 500

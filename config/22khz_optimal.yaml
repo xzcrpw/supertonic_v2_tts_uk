@@ -140,13 +140,13 @@ train_autoencoder:
   # Paper: 1.5M @ batch128. We have batch192 (1.5× more efficient)
   # 200k steps ≈ 300k paper steps - enough for good autoencoder
   total_iterations: 200000    # Budget-friendly, check quality at 50k/100k
-  warmup_steps: 0             # 0 - продовжуємо з 102k чекпоїнта!
+  warmup_steps: 5000          # LR warmup for fresh training
   checkpoint_interval: 1000   # Every 1k - don't lose progress!
   validation_interval: 10000  # Validate every 10k
   log_interval: 50            # Log every 50 steps for better monitoring
   
-  # Discriminator warmup - DISABLED (resuming from 102k checkpoint)
-  discriminator_start_steps: 0     # 0 - discriminator вже натренований!
+  # Discriminator warmup - generator trains alone first
+  discriminator_start_steps: 5000  # Gen needs time to learn HiFi-GAN head
   
   # Loss weights - EXACT PAPER VALUES (Appendix B.1)
   loss_weights:

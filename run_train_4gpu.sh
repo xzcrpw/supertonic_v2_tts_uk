@@ -27,7 +27,7 @@ CONFIG_FILE="config/22khz_optimal.yaml"
 DATA_DIR="data/audio"
 OUTPUT_DIR="outputs/autoencoder_hifigan"
 LOG_DIR="logs"
-NUM_GPUS=1
+NUM_GPUS=4
 MAX_RESTARTS=100
 RESTART_DELAY=30
 
@@ -87,8 +87,8 @@ run_training_loop() {
     
     mkdir -p "$LOG_DIR"
     
-    # Environment - Single GPU
-    export CUDA_VISIBLE_DEVICES=0
+    # Environment - 4 GPUs
+    export CUDA_VISIBLE_DEVICES=0,1,2,3
     export NCCL_DEBUG=WARN
     export NCCL_IB_DISABLE=1
     export PYTHONUNBUFFERED=1

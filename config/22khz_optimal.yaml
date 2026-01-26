@@ -39,7 +39,8 @@ model:
       intermediate_mult: 4    # 512 * 4 = 2048 intermediate
       gradient_checkpointing: false  # 96GB - not needed
     
-    # Decoder: latent(24) → hidden(512) → iSTFT → waveform
+    # Decoder: latent(24) → hidden(512) → HiFi-GAN → waveform
+    # NOTE: Using HiFi-GAN instead of WaveNeXt to eliminate metallic artifacts!
     decoder:
       input_dim: 24
       hidden_dim: 512
@@ -52,6 +53,16 @@ model:
       hop_length: 256
       causal: true            # For streaming inference
       gradient_checkpointing: false
+      
+      # ========== HiFi-GAN GENERATOR CONFIG ==========
+      # CRITICAL: product of upsample_rates MUST equal hop_length!
+      # 8 * 8 * 2 * 2 = 256 ✓
+      use_hifigan: true       # Set false to use old WaveNeXtHead (causes metallic sound!)
+      upsample_rates: [8, 8, 2, 2]
+      upsample_kernel_sizes: [16, 16, 4, 4]  # kernel >= 2*stride to avoid checkerboard
+      upsample_initial_channel: 512
+      resblock_kernel_sizes: [3, 7, 11]      # Multi-receptive field fusion
+      resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
 
     # Discriminators (HiFi-GAN style)
     discriminator:

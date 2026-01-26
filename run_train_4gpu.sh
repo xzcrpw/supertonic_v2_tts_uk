@@ -1,13 +1,20 @@
 #!/bin/bash
 #═══════════════════════════════════════════════════════════════════════════════
-#  🔊 SUPERTONIC v2 - Multi-GPU Training Script (nohup version)
+#  🔊 SUPERTONIC v2 - Multi-GPU Training Script (HiFi-GAN version)
 #═══════════════════════════════════════════════════════════════════════════════
 #
 #  Usage:
-#    ./run_train_4gpu.sh              # Start training in background
-#    ./run_train_4gpu.sh --stop       # Stop training
-#    ./run_train_4gpu.sh --status     # Check status
-#    ./run_train_4gpu.sh --logs       # Tail the log file
+#    ./run_train_4gpu.sh                    # Start training (auto-resume)
+#    ./run_train_4gpu.sh --fresh            # Start from scratch (ignore checkpoints)
+#    ./run_train_4gpu.sh --partial-resume   # Resume with partial weights (after arch change)
+#    ./run_train_4gpu.sh --stop             # Stop training
+#    ./run_train_4gpu.sh --status           # Check status
+#    ./run_train_4gpu.sh --logs             # Tail the log file
+#
+#  Partial Resume:
+#    Use --partial-resume when switching from WaveNeXt to HiFi-GAN decoder.
+#    This loads Encoder fully, Decoder partially (ConvNeXt blocks only),
+#    and resets iteration to 0 for fine-tuning the new HiFi-GAN head.
 #
 #  After starting, you can safely close the terminal!
 #
@@ -18,11 +25,14 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 CONFIG_FILE="config/22khz_optimal.yaml"
 DATA_DIR="data/audio"
-OUTPUT_DIR="outputs/autoencoder_4gpu"
+OUTPUT_DIR="outputs/autoencoder_hifigan"
 LOG_DIR="logs"
 NUM_GPUS=4
 MAX_RESTARTS=100
 RESTART_DELAY=30
+
+# Training mode (set by CLI flags)
+TRAINING_MODE="auto"  # auto | fresh | partial
 
 PID_FILE=".training.pid"
 MAIN_LOG="training.log"
@@ -112,7 +122,17 @@ run_training_loop() {
         cmd+=" --config $CONFIG_FILE"
         cmd+=" --data_dir $DATA_DIR"
         cmd+=" --output_dir $OUTPUT_DIR"
-        [[ -n "$checkpoint" ]] && cmd+=" --resume $checkpoint"
+        
+        # Handle resume modes
+        if [[ "$TRAINING_MODE" == "fresh" ]]; then
+            echo "🆕 Fresh start (ignoring checkpoints)"
+        elif [[ -n "$checkpoint" ]]; then
+            cmd+=" --resume $checkpoint"
+            if [[ "$TRAINING_MODE" == "partial" ]]; then
+                cmd+=" --partial-resume"
+                echo "🔧 Partial resume: Loading Encoder fully, Decoder partially (HiFi-GAN head will be random)"
+            fi
+        fi
         
         echo "🚀 $cmd"
         echo ""
@@ -158,17 +178,27 @@ cmd_start() {
     show_gpu_status
     
     local checkpoint=$(find_latest_checkpoint)
-    if [[ -n "$checkpoint" ]]; then
+    
+    if [[ "$TRAINING_MODE" == "fresh" ]]; then
+        echo -e "\n🆕 Fresh start requested (ignoring checkpoints)"
+    elif [[ -n "$checkpoint" ]]; then
         local iter=$(echo "$checkpoint" | sed 's/.*checkpoint_\([0-9]*\).*/\1/')
-        echo -e "\n📂 Will resume from: ${YELLOW}$checkpoint${NC} (step $iter)"
+        if [[ "$TRAINING_MODE" == "partial" ]]; then
+            echo -e "\n🔧 ${YELLOW}PARTIAL RESUME${NC} from: $checkpoint (step $iter)"
+            echo -e "   Encoder: ✅ Full weights"
+            echo -e "   Decoder: ⚠️ Partial (ConvNeXt only, HiFi-GAN head = random)"
+            echo -e "   Iteration: Reset to 0"
+        else
+            echo -e "\n📂 Will resume from: ${YELLOW}$checkpoint${NC} (step $iter)"
+        fi
     else
-        echo -e "\n🆕 Will start fresh training"
+        echo -e "\n🆕 No checkpoint found, starting fresh"
     fi
     
     echo -e "\n🚀 Starting in background..."
     
-    # Start THIS script with --loop flag via nohup
-    nohup bash "$0" --loop > "$MAIN_LOG" 2>&1 &
+    # Start THIS script with --loop flag via nohup (pass training mode)
+    TRAINING_MODE="$TRAINING_MODE" nohup bash "$0" --loop > "$MAIN_LOG" 2>&1 &
     echo $! > "$PID_FILE"
     
     sleep 1
@@ -241,10 +271,42 @@ case "${1:-}" in
     --logs|--attach)
         cmd_logs
         ;;
-    --start|"")
+    --fresh)
+        # Start from scratch, ignore checkpoints
+        TRAINING_MODE="fresh"
         cmd_start
         ;;
+    --partial-resume|--partial)
+        # Resume with partial weights (after WaveNeXt → HiFi-GAN change)
+        TRAINING_MODE="partial"
+        cmd_start
+        ;;
+    --start|"")
+        TRAINING_MODE="auto"
+        cmd_start
+        ;;
+    --help|-h)
+        echo -e "${CYAN}🔊 SUPERTONIC v2 - Training Script${NC}"
+        echo ""
+        echo "Usage: $0 [COMMAND]"
+        echo ""
+        echo "Commands:"
+        echo "  (none), --start      Start training (auto-resume from last checkpoint)"
+        echo "  --fresh              Start from scratch (ignore existing checkpoints)"
+        echo "  --partial-resume     Resume with partial weights (use after arch change)"
+        echo "  --stop               Stop training"
+        echo "  --status             Show training status"
+        echo "  --logs               Tail training logs"
+        echo ""
+        echo "Partial Resume:"
+        echo "  Use --partial-resume when you changed the decoder architecture"
+        echo "  (e.g., WaveNeXt → HiFi-GAN). This will:"
+        echo "    ✅ Load Encoder weights fully (preserves your training!)"
+        echo "    ⚠️ Load Decoder partially (only ConvNeXt blocks match)"
+        echo "    🔧 HiFi-GAN head will initialize randomly"
+        echo "    🔄 Iteration resets to 0 for fine-tuning"
+        ;;
     *)
-        echo "Usage: $0 [--start|--stop|--status|--logs]"
+        echo "Usage: $0 [--start|--fresh|--partial-resume|--stop|--status|--logs|--help]"
         ;;
 esac

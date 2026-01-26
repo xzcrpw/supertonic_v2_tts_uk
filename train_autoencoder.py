@@ -128,22 +128,78 @@ def load_checkpoint(
     mrd: nn.Module,
     optimizer_g: Optional[torch.optim.Optimizer] = None,
     optimizer_d: Optional[torch.optim.Optimizer] = None,
-    scaler: Optional[GradScaler] = None
+    scaler: Optional[GradScaler] = None,
+    partial_resume: bool = False
 ) -> int:
-    """Завантажує checkpoint."""
+    """
+    Завантажує checkpoint.
+    
+    Args:
+        partial_resume: If True, loads only matching weights (useful when 
+                       architecture changed, e.g., WaveNeXt → HiFi-GAN).
+                       Resets iteration to 0 and skips optimizer loading.
+    """
     checkpoint = torch.load(path, map_location="cpu")
     
-    encoder.load_state_dict(checkpoint["encoder"])
-    decoder.load_state_dict(checkpoint["decoder"])
-    mpd.load_state_dict(checkpoint["mpd"])
-    mrd.load_state_dict(checkpoint["mrd"])
+    if partial_resume:
+        # ========== PARTIAL RESUME (Architecture Change) ==========
+        # Load Encoder fully (it's compatible)
+        encoder.load_state_dict(checkpoint["encoder"])
+        print("✅ Encoder weights loaded fully!")
+        
+        # Load Decoder partially (filter mismatched layers)
+        decoder_dict = decoder.state_dict()
+        pretrained_decoder = checkpoint["decoder"]
+        
+        matched_layers = {}
+        mismatched_layers = []
+        
+        for k, v in pretrained_decoder.items():
+            if k in decoder_dict:
+                if v.shape == decoder_dict[k].shape:
+                    matched_layers[k] = v
+                else:
+                    mismatched_layers.append(f"{k}: {v.shape} → {decoder_dict[k].shape}")
+            else:
+                mismatched_layers.append(f"{k}: not found in new model")
+        
+        decoder_dict.update(matched_layers)
+        decoder.load_state_dict(decoder_dict)
+        
+        print(f"⚠️ Decoder: {len(matched_layers)}/{len(pretrained_decoder)} layers loaded")
+        if mismatched_layers:
+            print(f"   Skipped layers (architecture changed):")
+            for layer in mismatched_layers[:10]:  # Show first 10
+                print(f"     - {layer}")
+            if len(mismatched_layers) > 10:
+                print(f"     ... and {len(mismatched_layers) - 10} more")
+        
+        # Load discriminators fully (they're compatible)
+        mpd.load_state_dict(checkpoint["mpd"])
+        mrd.load_state_dict(checkpoint["mrd"])
+        print("✅ Discriminators loaded!")
+        
+        # Skip optimizer loading - parameters changed!
+        print("⚠️ Optimizer states NOT loaded (new parameters)")
+        print("⚠️ Starting from iteration 0")
+        
+        return 0  # Reset iteration for fine-tuning
     
-    if optimizer_g is not None:
-        optimizer_g.load_state_dict(checkpoint["optimizer_g"])
-    if optimizer_d is not None:
-        optimizer_d.load_state_dict(checkpoint["optimizer_d"])
-    if scaler is not None:
-        scaler.load_state_dict(checkpoint["scaler"])
+    else:
+        # ========== FULL RESUME (Same Architecture) ==========
+        encoder.load_state_dict(checkpoint["encoder"])
+        decoder.load_state_dict(checkpoint["decoder"])
+        mpd.load_state_dict(checkpoint["mpd"])
+        mrd.load_state_dict(checkpoint["mrd"])
+        
+        if optimizer_g is not None:
+            optimizer_g.load_state_dict(checkpoint["optimizer_g"])
+        if optimizer_d is not None:
+            optimizer_d.load_state_dict(checkpoint["optimizer_d"])
+        if scaler is not None:
+            scaler.load_state_dict(checkpoint["scaler"])
+        
+        return checkpoint["iteration"]
     
     return checkpoint["iteration"]
 
@@ -490,15 +546,27 @@ def main(args):
         n_fft=config.audio.n_fft,              # CRITICAL: use config values!
         hop_length=config.audio.hop_length,    # CRITICAL: use config values!
         causal=ae_config.decoder.causal,
-        gradient_checkpointing=gradient_checkpointing
+        gradient_checkpointing=gradient_checkpointing,
+        # HiFi-GAN parameters (eliminates metallic sound!)
+        use_hifigan=ae_config.decoder.get("use_hifigan", True),
+        upsample_rates=ae_config.decoder.get("upsample_rates", [8, 8, 2, 2]),
+        upsample_kernel_sizes=ae_config.decoder.get("upsample_kernel_sizes", [16, 16, 4, 4]),
+        upsample_initial_channel=ae_config.decoder.get("upsample_initial_channel", 512),
+        resblock_kernel_sizes=ae_config.decoder.get("resblock_kernel_sizes", [3, 7, 11]),
+        resblock_dilation_sizes=ae_config.decoder.get("resblock_dilation_sizes", [[1, 3, 5], [1, 3, 5], [1, 3, 5]])
     ).to(device)
     
     if is_main:
+        use_hifigan = ae_config.decoder.get("use_hifigan", True)
         print(f"=" * 60)
         print(f"MODEL CONFIGURATION CHECK:")
         print(f"  Encoder input_dim (n_mels): {ae_config.encoder.input_dim}")
         print(f"  Decoder n_fft: {config.audio.n_fft}")
         print(f"  Decoder hop_length: {config.audio.hop_length}")
+        print(f"  Decoder head: {'HiFi-GAN 🎸 (clean audio)' if use_hifigan else 'WaveNeXt ⚠️ (may have metallic sound)'}")
+        if use_hifigan:
+            upsample_rates = ae_config.decoder.get("upsample_rates", [8, 8, 2, 2])
+            print(f"  HiFi-GAN upsample_rates: {upsample_rates} (product={eval('*'.join(map(str, upsample_rates)))})")
         print(f"  Audio sample_rate: {config.audio.sample_rate}")
         print(f"  MRD fft_sizes: {list(ae_config.discriminator.mrd_fft_sizes)}")
         print(f"=" * 60)
@@ -559,7 +627,8 @@ def main(args):
         start_iteration = load_checkpoint(
             Path(args.resume),
             encoder, decoder, mpd, mrd,
-            optimizer_g, optimizer_d, scaler
+            optimizer_g, optimizer_d, scaler,
+            partial_resume=args.partial_resume  # Use partial resume for architecture changes
         )
     
     # Training loop
@@ -685,6 +754,8 @@ if __name__ == "__main__":
                         help="Path to config file")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to checkpoint to resume from")
+    parser.add_argument("--partial-resume", action="store_true",
+                        help="Load only matching weights (use after architecture change, e.g., WaveNeXt → HiFi-GAN)")
     parser.add_argument("--batch-size", type=int, default=None,
                         help="Override batch size")
     parser.add_argument("--lr", type=float, default=None,

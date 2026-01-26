@@ -252,29 +252,13 @@ class LatentEncoder(nn.Module):
 
 class WaveNeXtHead(nn.Module):
     """
-    WaveNeXt-style waveform head - REPLACES iSTFT head.
+    [DEPRECATED] WaveNeXt-style waveform head.
     
-    From Supertonic paper (Appendix A.1.2):
-    "A convolutional layer with kernel size of 3 converts the normalized output 
-    of the ConvNeXt blocks to hidden representations of dimension 2048. 
-    A final linear layer then projects these representations into frame-level 
-    outputs with 512 channels. These outputs are subsequently reshaped into 
-    a single-channel format, producing the final waveform output."
+    WARNING: This approach causes metallic sound artifacts due to lack of 
+    overlap-add between frames. Each frame is generated independently,
+    causing phase discontinuities at frame boundaries.
     
-    Architecture (from paper):
-    - BatchNorm(hidden_dim)
-    - Conv1d(hidden_dim → head_dim, kernel=3)  # head_dim=2048 in paper
-    - Linear(head_dim → frame_samples)  # 512 samples per frame at 44.1kHz
-    - Reshape to waveform
-    
-    For 22kHz with hop_length=256:
-    - Frame rate = 22050/256 ≈ 86 Hz
-    - Output per frame = hop_length = 256 samples
-    
-    Args:
-        input_dim: Input feature dimension (512)
-        head_dim: Intermediate dimension (2048 in paper)
-        hop_length: Number of audio samples per frame (256 for 22kHz)
+    Use HiFiGANGenerator instead for clean audio!
     """
     
     def __init__(
@@ -285,50 +269,187 @@ class WaveNeXtHead(nn.Module):
     ):
         super().__init__()
         self.hop_length = hop_length
-        
-        # From paper: "followed by another batch normalization"
         self.norm = nn.BatchNorm1d(input_dim)
-        
-        # From paper: "a convolutional layer with kernel size of 3 converts 
-        # the normalized output to hidden representations of dimension 2048"
         self.conv = nn.Conv1d(input_dim, head_dim, kernel_size=3, padding=1)
-        
-        # From paper: "A final linear layer then projects these representations 
-        # into frame-level outputs with 512 channels" 
-        # (512 for 44.1kHz, we use hop_length for flexibility)
         self.fc = nn.Linear(head_dim, hop_length)
-        
-        # PReLU activation between conv and linear (from WaveNeXt inspiration)
         self.act = nn.PReLU(num_parameters=head_dim)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.norm(x)
+        x = self.conv(x)
+        x = self.act(x)
+        x = x.transpose(1, 2)
+        x = self.fc(x)
+        batch_size, num_frames, _ = x.shape
+        audio = x.reshape(batch_size, num_frames * self.hop_length)
+        return audio
+
+
+# ============================================================================
+# HiFi-GAN Generator - RECOMMENDED for clean audio without metallic artifacts
+# ============================================================================
+
+class ResBlock(nn.Module):
+    """
+    HiFi-GAN Residual Block with multi-receptive field fusion.
+    
+    Uses dilated convolutions to capture different temporal patterns.
+    The key insight: overlap from convolutions naturally smooths frame boundaries.
+    """
+    
+    def __init__(
+        self,
+        channels: int,
+        kernel_size: int = 3,
+        dilations: Tuple[int, ...] = (1, 3, 5)
+    ):
+        super().__init__()
+        
+        self.convs1 = nn.ModuleList()
+        self.convs2 = nn.ModuleList()
+        
+        for dilation in dilations:
+            padding = (kernel_size * dilation - dilation) // 2
+            self.convs1.append(
+                nn.Sequential(
+                    nn.LeakyReLU(0.1),
+                    nn.Conv1d(channels, channels, kernel_size,
+                              dilation=dilation, padding=padding)
+                )
+            )
+            self.convs2.append(
+                nn.Sequential(
+                    nn.LeakyReLU(0.1),
+                    nn.Conv1d(channels, channels, kernel_size,
+                              dilation=1, padding=(kernel_size - 1) // 2)
+                )
+            )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for conv1, conv2 in zip(self.convs1, self.convs2):
+            xt = conv1(x)
+            xt = conv2(xt)
+            x = x + xt
+        return x
+
+
+class HiFiGANGenerator(nn.Module):
+    """
+    HiFi-GAN Generator - Upsamples latent features to waveform.
+    
+    This is the KEY component that eliminates metallic sound!
+    
+    Why it works:
+    1. ConvTranspose1d with proper kernel/stride creates OVERLAPPING windows
+    2. Overlap-add is implicit in the transposed convolution math
+    3. No explicit phase prediction - learns smooth transitions naturally
+    
+    Architecture:
+    - Input projection: hidden_dim → initial_channel
+    - Series of upsample blocks: ConvTranspose1d + ResBlocks
+    - Output projection: Conv1d → 1 channel waveform
+    
+    For 22kHz with hop_length=256:
+    - upsample_rates: [8, 8, 2, 2] → product = 256 = hop_length ✓
+    - upsample_kernel_sizes: [16, 16, 4, 4] → kernel >= 2*stride ✓
+    
+    Args:
+        input_dim: Input feature dimension (512 from ConvNeXt)
+        upsample_rates: Upsampling factors per stage
+        upsample_kernel_sizes: Kernel sizes for transposed convs
+        upsample_initial_channel: Channels after first projection
+        resblock_kernel_sizes: Kernel sizes for residual blocks
+        resblock_dilation_sizes: Dilation patterns for residual blocks
+    """
+    
+    def __init__(
+        self,
+        input_dim: int = 512,
+        upsample_rates: List[int] = [8, 8, 2, 2],
+        upsample_kernel_sizes: List[int] = [16, 16, 4, 4],
+        upsample_initial_channel: int = 512,
+        resblock_kernel_sizes: List[int] = [3, 7, 11],
+        resblock_dilation_sizes: List[List[int]] = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+    ):
+        super().__init__()
+        
+        self.num_upsamples = len(upsample_rates)
+        self.num_kernels = len(resblock_kernel_sizes)
+        
+        # Validate: product of upsample_rates should equal hop_length
+        self.hop_length = 1
+        for r in upsample_rates:
+            self.hop_length *= r
+        
+        # Input projection
+        self.conv_pre = nn.Conv1d(input_dim, upsample_initial_channel, 7, padding=3)
+        
+        # Upsampling layers
+        self.ups = nn.ModuleList()
+        self.resblocks = nn.ModuleList()
+        
+        ch = upsample_initial_channel
+        for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
+            # Transposed conv for upsampling
+            # Key: kernel_size >= 2 * stride to ensure overlap!
+            self.ups.append(
+                nn.ConvTranspose1d(
+                    ch, ch // 2,
+                    kernel_size=k,
+                    stride=u,
+                    padding=(k - u) // 2
+                )
+            )
+            ch = ch // 2
+            
+            # Multi-receptive field fusion (MRF) block
+            for j, (kr, dr) in enumerate(zip(resblock_kernel_sizes, resblock_dilation_sizes)):
+                self.resblocks.append(ResBlock(ch, kr, tuple(dr)))
+        
+        # Output projection
+        self.conv_post = nn.Conv1d(ch, 1, 7, padding=3)
+        
+        # Weight initialization (important for stability!)
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
+            nn.init.normal_(m.weight, 0.0, 0.01)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Convert frame features directly to waveform.
+        Upsample features to waveform.
         
         Args:
-            x: Frame features [B, hidden_dim, T] (channel-first from ConvNeXt)
+            x: Features [B, input_dim, T] from ConvNeXt decoder
         
         Returns:
             audio: Waveform [B, T * hop_length]
         """
-        # BatchNorm expects [B, C, T]
-        x = self.norm(x)  # [B, hidden_dim, T]
+        x = self.conv_pre(x)
         
-        # Conv1d: [B, hidden_dim, T] → [B, head_dim, T]
-        x = self.conv(x)
-        x = self.act(x)
+        for i, up in enumerate(self.ups):
+            x = F.leaky_relu(x, 0.1)
+            x = up(x)
+            
+            # Apply all resblocks for this upsample level, then average
+            xs = None
+            for j in range(self.num_kernels):
+                idx = i * self.num_kernels + j
+                if xs is None:
+                    xs = self.resblocks[idx](x)
+                else:
+                    xs = xs + self.resblocks[idx](x)
+            x = xs / self.num_kernels
         
-        # Transpose for Linear: [B, head_dim, T] → [B, T, head_dim]
-        x = x.transpose(1, 2)
+        x = F.leaky_relu(x, 0.1)
+        x = self.conv_post(x)
+        x = torch.tanh(x)
         
-        # Linear: [B, T, head_dim] → [B, T, hop_length]
-        x = self.fc(x)
-        
-        # Reshape to waveform: [B, T, hop_length] → [B, T * hop_length]
-        batch_size, num_frames, _ = x.shape
-        audio = x.reshape(batch_size, num_frames * self.hop_length)
-        
-        return audio
+        # Remove channel dimension: [B, 1, T] → [B, T]
+        return x.squeeze(1)
 
 
 class ISTFTHead(nn.Module):
@@ -415,13 +536,14 @@ class LatentDecoder(nn.Module):
     """
     Latent Decoder - декодує латенти в waveform.
 
-    Архітектура (Supertonic-style):
+    Архітектура (HiFi-GAN style for clean audio):
     1. Conv1d(24 → 512) + BatchNorm
     2. 10 dilated ConvNeXt blocks (dilations: [1,2,4,1,2,4,1,1,1,1])
-    3. WaveNeXtHead → waveform (NOT iSTFT!)
+    3. HiFiGANGenerator → waveform with overlap-add (NO metallic artifacts!)
 
-    Key insight: Direct waveform generation via Linear+PReLU avoids
-    the phase prediction problems that cause metallic sound.
+    Key insight: HiFi-GAN's transposed convolutions with proper kernel/stride
+    create overlapping windows that naturally smooth frame boundaries.
+    This eliminates the phase discontinuities that cause metallic sound.
 
     Всі конволюції КАУЗАЛЬНІ для streaming підтримки.
     """
@@ -435,18 +557,37 @@ class LatentDecoder(nn.Module):
         intermediate_mult: int = 4,
         dilations: Optional[List[int]] = None,
         n_fft: int = 2048,  # kept for config compat, not used
-        hop_length: int = 512,
+        hop_length: int = 256,
         causal: bool = True,
-        gradient_checkpointing: bool = False
+        gradient_checkpointing: bool = False,
+        # HiFi-GAN specific parameters
+        upsample_rates: Optional[List[int]] = None,
+        upsample_kernel_sizes: Optional[List[int]] = None,
+        upsample_initial_channel: int = 512,
+        resblock_kernel_sizes: Optional[List[int]] = None,
+        resblock_dilation_sizes: Optional[List[List[int]]] = None,
+        use_hifigan: bool = True  # Set False to use old WaveNeXtHead
     ):
         super().__init__()
 
         if dilations is None:
             dilations = [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
+        
+        # Default HiFi-GAN config for 22kHz (hop_length=256)
+        # CRITICAL: product of upsample_rates MUST equal hop_length!
+        if upsample_rates is None:
+            upsample_rates = [8, 8, 2, 2]  # 8*8*2*2 = 256 ✓
+        if upsample_kernel_sizes is None:
+            upsample_kernel_sizes = [16, 16, 4, 4]  # kernel >= 2*stride ✓
+        if resblock_kernel_sizes is None:
+            resblock_kernel_sizes = [3, 7, 11]
+        if resblock_dilation_sizes is None:
+            resblock_dilation_sizes = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.hop_length = hop_length
+        self.use_hifigan = use_hifigan
 
         # Initial projection: latent → hidden
         self.input_conv = nn.Conv1d(input_dim, hidden_dim, kernel_size=1)
@@ -463,13 +604,24 @@ class LatentDecoder(nn.Module):
             gradient_checkpointing=gradient_checkpointing
         )
 
-        # WaveNeXt head - direct waveform generation (NO iSTFT!)
-        # From paper: head_dim=2048 (intermediate_mult * hidden_dim)
-        self.head = WaveNeXtHead(
-            input_dim=hidden_dim,
-            head_dim=hidden_dim * intermediate_mult,  # 512*4=2048
-            hop_length=hop_length
-        )
+        # Choose waveform generation head
+        if use_hifigan:
+            # HiFi-GAN Generator - RECOMMENDED for clean audio!
+            self.head = HiFiGANGenerator(
+                input_dim=hidden_dim,
+                upsample_rates=upsample_rates,
+                upsample_kernel_sizes=upsample_kernel_sizes,
+                upsample_initial_channel=upsample_initial_channel,
+                resblock_kernel_sizes=resblock_kernel_sizes,
+                resblock_dilation_sizes=resblock_dilation_sizes
+            )
+        else:
+            # [DEPRECATED] WaveNeXt head - causes metallic artifacts!
+            self.head = WaveNeXtHead(
+                input_dim=hidden_dim,
+                head_dim=hidden_dim * intermediate_mult,
+                hop_length=hop_length
+            )
 
     def forward(self, latent: torch.Tensor) -> torch.Tensor:
         """
@@ -488,12 +640,8 @@ class LatentDecoder(nn.Module):
         # ConvNeXt blocks
         x = self.convnext(x)  # [B, hidden, T]
 
-        # WaveNeXt head expects [B, hidden, T] (channel-first)
-        audio = self.head(x)   # [B, T * hop_length]
-        
-        # NOTE: NO tanh! WaveNeXtHead learns the output range directly.
-        # tanh was causing amplitude reduction (50%) and metallic artifacts.
-        # The network learns proper output scaling through reconstruction loss.
+        # Generate waveform via HiFi-GAN (or WaveNeXt fallback)
+        audio = self.head(x)  # [B, T * hop_length]
 
         return audio
 

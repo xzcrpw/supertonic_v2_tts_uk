@@ -141,19 +141,38 @@ def load_checkpoint(
     """
     checkpoint = torch.load(path, map_location="cpu")
     
-    def strip_module_prefix(state_dict):
-        """Remove 'module.' prefix from DDP checkpoints."""
+    def adapt_state_dict(state_dict, model):
+        """
+        Adapt state_dict keys to match model structure.
+        Handles both DDP→DDP, DDP→single, single→DDP, single→single.
+        """
+        # Check if model expects 'module.' prefix (DDP)
+        model_keys = list(model.state_dict().keys())
+        model_expects_module = len(model_keys) > 0 and model_keys[0].startswith("module.")
+        
+        # Check if checkpoint has 'module.' prefix
+        ckpt_keys = list(state_dict.keys())
+        ckpt_has_module = len(ckpt_keys) > 0 and ckpt_keys[0].startswith("module.")
+        
         new_dict = {}
         for k, v in state_dict.items():
-            new_key = k[7:] if k.startswith("module.") else k
+            if model_expects_module and not ckpt_has_module:
+                # single GPU checkpoint → DDP model: add prefix
+                new_key = "module." + k
+            elif not model_expects_module and ckpt_has_module:
+                # DDP checkpoint → single GPU model: remove prefix
+                new_key = k[7:] if k.startswith("module.") else k
+            else:
+                # Same format
+                new_key = k
             new_dict[new_key] = v
         return new_dict
     
-    # Strip module. prefix from all state dicts (DDP → single GPU compatibility)
-    checkpoint["encoder"] = strip_module_prefix(checkpoint["encoder"])
-    checkpoint["decoder"] = strip_module_prefix(checkpoint["decoder"])
-    checkpoint["mpd"] = strip_module_prefix(checkpoint["mpd"])
-    checkpoint["mrd"] = strip_module_prefix(checkpoint["mrd"])
+    # Adapt state dicts to match current model structure (handles DDP ↔ single GPU)
+    checkpoint["encoder"] = adapt_state_dict(checkpoint["encoder"], encoder)
+    checkpoint["decoder"] = adapt_state_dict(checkpoint["decoder"], decoder)
+    checkpoint["mpd"] = adapt_state_dict(checkpoint["mpd"], mpd)
+    checkpoint["mrd"] = adapt_state_dict(checkpoint["mrd"], mrd)
     
     if partial_resume:
         # ========== PARTIAL RESUME (Architecture Change) ==========

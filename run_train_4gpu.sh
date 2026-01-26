@@ -87,9 +87,6 @@ run_training_loop() {
     
     mkdir -p "$LOG_DIR"
     
-    # Save training mode to file for persistence across restarts
-    echo "$TRAINING_MODE" > ".training_mode"
-    
     # Environment - Single GPU
     export CUDA_VISIBLE_DEVICES=0
     export NCCL_DEBUG=WARN
@@ -203,6 +200,9 @@ cmd_start() {
     fi
     
     echo -e "\n🚀 Starting in background..."
+    
+    # Save training mode to file BEFORE starting background process
+    echo "$TRAINING_MODE" > ".training_mode"
     
     # Start THIS script with --loop flag via nohup (pass training mode)
     TRAINING_MODE="$TRAINING_MODE" nohup bash "$0" --loop > "$MAIN_LOG" 2>&1 &

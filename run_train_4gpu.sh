@@ -87,6 +87,9 @@ run_training_loop() {
     
     mkdir -p "$LOG_DIR"
     
+    # Save training mode to file for persistence across restarts
+    echo "$TRAINING_MODE" > ".training_mode"
+    
     # Environment - Single GPU
     export CUDA_VISIBLE_DEVICES=0
     export NCCL_DEBUG=WARN
@@ -100,6 +103,9 @@ run_training_loop() {
     date
     
     while [[ $restart_count -lt $MAX_RESTARTS ]]; do
+        # Read training mode from file (persists across restarts)
+        [[ -f ".training_mode" ]] && TRAINING_MODE=$(cat .training_mode)
+        
         local checkpoint=$(find_latest_checkpoint)
         local iteration=0
         [[ -n "$checkpoint" ]] && iteration=$(echo "$checkpoint" | sed 's/.*checkpoint_\([0-9]*\).*/\1/')

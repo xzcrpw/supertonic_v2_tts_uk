@@ -141,6 +141,20 @@ def load_checkpoint(
     """
     checkpoint = torch.load(path, map_location="cpu")
     
+    def strip_module_prefix(state_dict):
+        """Remove 'module.' prefix from DDP checkpoints."""
+        new_dict = {}
+        for k, v in state_dict.items():
+            new_key = k[7:] if k.startswith("module.") else k
+            new_dict[new_key] = v
+        return new_dict
+    
+    # Strip module. prefix from all state dicts (DDP → single GPU compatibility)
+    checkpoint["encoder"] = strip_module_prefix(checkpoint["encoder"])
+    checkpoint["decoder"] = strip_module_prefix(checkpoint["decoder"])
+    checkpoint["mpd"] = strip_module_prefix(checkpoint["mpd"])
+    checkpoint["mrd"] = strip_module_prefix(checkpoint["mrd"])
+    
     if partial_resume:
         # ========== PARTIAL RESUME (Architecture Change) ==========
         # Load Encoder fully (it's compatible)

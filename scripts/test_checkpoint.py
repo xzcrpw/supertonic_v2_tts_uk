@@ -392,7 +392,7 @@ def list_audio_files(data_dir: str = "data", limit: int = 20) -> List[str]:
     return audio_files
 
 
-def discover_datasets(data_dir: str = "data/audio/audio") -> dict:
+def discover_datasets(data_dir: str = "data/audio") -> dict:
     """
     Discover available datasets and speakers.
     Returns: {dataset_name: [speaker_dirs] or None if flat}
@@ -429,7 +429,7 @@ def discover_datasets(data_dir: str = "data/audio/audio") -> dict:
     return datasets
 
 
-def list_audio_interactive(data_dir: str = "data/audio/audio", limit: int = 40) -> Optional[str]:
+def list_audio_interactive(data_dir: str = "data/audio", limit: int = 40) -> Optional[str]:
     """
     Interactive audio file selection with dataset/speaker hierarchy.
     Returns selected audio path or None.

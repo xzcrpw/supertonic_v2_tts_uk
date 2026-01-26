@@ -27,7 +27,7 @@ CONFIG_FILE="config/22khz_optimal.yaml"
 DATA_DIR="data/audio"
 OUTPUT_DIR="outputs/autoencoder_hifigan"
 LOG_DIR="logs"
-NUM_GPUS=4
+NUM_GPUS=1
 MAX_RESTARTS=100
 RESTART_DELAY=30
 
@@ -87,8 +87,8 @@ run_training_loop() {
     
     mkdir -p "$LOG_DIR"
     
-    # Environment
-    export CUDA_VISIBLE_DEVICES=0,1,2,3
+    # Environment - Single GPU
+    export CUDA_VISIBLE_DEVICES=0
     export NCCL_DEBUG=WARN
     export NCCL_IB_DISABLE=1
     export PYTHONUNBUFFERED=1
@@ -122,6 +122,7 @@ run_training_loop() {
         cmd+=" --config $CONFIG_FILE"
         cmd+=" --data_dir $DATA_DIR"
         cmd+=" --output_dir $OUTPUT_DIR"
+        cmd+=" --no-wandb"  # Disable wandb (no API key on server)
         
         # Handle resume modes
         if [[ "$TRAINING_MODE" == "fresh" ]]; then
@@ -172,7 +173,7 @@ cmd_start() {
     
     echo -e "${CYAN}╔═══════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║  🔊 SUPERTONIC v2 - Ukrainian TTS Training                ║${NC}"
-    echo -e "${CYAN}║  ${NUM_GPUS}× GPU | nohup mode (survives disconnect)            ║${NC}"
+    echo -e "${CYAN}║  ${NUM_GPUS}× GPU (RTX 5090) | nohup mode                      ║${NC}"
     echo -e "${CYAN}╚═══════════════════════════════════════════════════════════╝${NC}"
     
     show_gpu_status

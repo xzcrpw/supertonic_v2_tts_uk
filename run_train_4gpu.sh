@@ -24,7 +24,7 @@
 # Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
 CONFIG_FILE="config/22khz_optimal.yaml"
-DATA_DIR="data/audio"
+DATA_DIR="data"
 OUTPUT_DIR="outputs/autoencoder_hifigan"
 LOG_DIR="logs"
 NUM_GPUS=4

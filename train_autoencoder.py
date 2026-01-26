@@ -188,10 +188,29 @@ def load_checkpoint(
             if len(mismatched_layers) > 10:
                 print(f"     ... and {len(mismatched_layers) - 10} more")
         
-        # Load discriminators fully (they're compatible)
-        mpd.load_state_dict(checkpoint["mpd"])
-        mrd.load_state_dict(checkpoint["mrd"])
-        print("✅ Discriminators loaded!")
+        # Load discriminators partially (they may have different fft_sizes)
+        def load_partial_state_dict(model, state_dict, name):
+            model_dict = model.state_dict()
+            matched = {}
+            skipped = []
+            for k, v in state_dict.items():
+                if k in model_dict:
+                    if v.shape == model_dict[k].shape:
+                        matched[k] = v
+                    else:
+                        skipped.append(f"{k}: {v.shape} → {model_dict[k].shape}")
+                else:
+                    skipped.append(f"{k}: not found")
+            model_dict.update(matched)
+            model.load_state_dict(model_dict)
+            if skipped:
+                print(f"⚠️ {name}: {len(matched)}/{len(state_dict)} layers loaded")
+            else:
+                print(f"✅ {name}: fully loaded")
+            return len(skipped)
+        
+        load_partial_state_dict(mpd, checkpoint["mpd"], "MPD")
+        load_partial_state_dict(mrd, checkpoint["mrd"], "MRD")
         
         # Skip optimizer loading - parameters changed!
         print("⚠️ Optimizer states NOT loaded (new parameters)")

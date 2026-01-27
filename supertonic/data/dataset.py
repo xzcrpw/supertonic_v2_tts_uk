@@ -145,6 +145,7 @@ class TTSDataset(Dataset):
         min_duration: Minimum audio duration
         max_text_length: Maximum text length
         reference_mode: "self" (use same audio) or "random" (random from same speaker)
+        data_dir: Base directory for audio paths (if paths in manifest are relative)
     """
     
     def __init__(
@@ -157,7 +158,8 @@ class TTSDataset(Dataset):
         max_text_length: int = 500,
         reference_mode: str = "self",
         reference_min_duration: float = 1.0,
-        reference_max_duration: float = 10.0
+        reference_max_duration: float = 10.0,
+        data_dir: Optional[Union[str, Path]] = None
     ):
         self.manifest_path = Path(manifest_path)
         self.audio_processor = audio_processor or AudioProcessor()
@@ -168,6 +170,12 @@ class TTSDataset(Dataset):
         self.reference_mode = reference_mode
         self.reference_min_duration = reference_min_duration
         self.reference_max_duration = reference_max_duration
+        
+        # Data directory
+        if data_dir is not None:
+            self.data_dir = Path(data_dir)
+        else:
+            self.data_dir = self.manifest_path.parent.parent  # manifests/ -> data/
         
         # Load manifest
         self.samples = self._load_manifest()
@@ -201,13 +209,21 @@ class TTSDataset(Dataset):
             speaker_to_samples[speaker].append(idx)
         return speaker_to_samples
     
+    def _resolve_path(self, audio_path: str) -> Path:
+        """Resolve audio path (relative or absolute)."""
+        full_path = Path(audio_path)
+        if not full_path.is_absolute():
+            full_path = self.data_dir / audio_path
+        return full_path
+    
     def _get_reference_audio(self, idx: int) -> torch.Tensor:
         """Отримує reference audio."""
         sample = self.samples[idx]
         
         if self.reference_mode == "self":
             # Use same audio as reference
-            return self.audio_processor.load(sample["audio_path"])
+            audio_path = self._resolve_path(sample["audio_path"])
+            return self.audio_processor.load(str(audio_path))
         
         elif self.reference_mode == "random":
             # Random sample from same speaker
@@ -226,7 +242,8 @@ class TTSDataset(Dataset):
                 valid_samples = [idx]
             
             ref_idx = random.choice(valid_samples)
-            return self.audio_processor.load(self.samples[ref_idx]["audio_path"])
+            audio_path = self._resolve_path(self.samples[ref_idx]["audio_path"])
+            return self.audio_processor.load(str(audio_path))
         
         else:
             raise ValueError(f"Unknown reference_mode: {self.reference_mode}")
@@ -238,7 +255,8 @@ class TTSDataset(Dataset):
         sample = self.samples[idx]
         
         # Load audio
-        audio = self.audio_processor.load(sample["audio_path"])
+        audio_path = self._resolve_path(sample["audio_path"])
+        audio = self.audio_processor.load(str(audio_path))
         mel = self.audio_processor.compute_mel(audio)
         
         # Tokenize text

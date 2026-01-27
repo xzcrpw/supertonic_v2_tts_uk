@@ -341,6 +341,16 @@ def main(args):
     if args.lr:
         config.train_tts.learning_rate = args.lr
     
+    # Override manifest paths
+    train_manifest = args.train_manifest if args.train_manifest else config.data.train_manifest
+    val_manifest = args.val_manifest if args.val_manifest else config.data.val_manifest
+    data_dir = args.data_dir if args.data_dir else config.paths.get("data_dir", "data")
+    
+    if is_main:
+        print(f"Train manifest: {train_manifest}")
+        print(f"Val manifest: {val_manifest}")
+        print(f"Data directory: {data_dir}")
+    
     # Logging
     if is_main and not args.no_wandb:
         wandb.init(
@@ -350,8 +360,13 @@ def main(args):
         )
     
     # Output directories
-    checkpoint_dir = Path(config.output.checkpoint_dir) / "tts"
-    sample_dir = Path(config.output.sample_dir) / "tts"
+    if args.output_dir:
+        output_base = Path(args.output_dir)
+        checkpoint_dir = output_base / "checkpoints"
+        sample_dir = output_base / "samples"
+    else:
+        checkpoint_dir = Path(config.output.checkpoint_dir) / "text_to_latent"
+        sample_dir = Path(config.output.sample_dir) / "text_to_latent"
     
     if is_main:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -371,19 +386,26 @@ def main(args):
     
     # Dataset
     train_dataset = TTSDataset(
-        manifest_path=config.data.train_manifest,
+        manifest_path=train_manifest,
         audio_processor=audio_processor,
         tokenizer=tokenizer,
         max_duration=config.data.max_audio_duration,
         min_duration=config.data.min_audio_duration,
-        max_text_length=config.data.max_text_length
+        max_text_length=config.data.max_text_length,
+        data_dir=data_dir
     )
     
     val_dataset = TTSDataset(
-        manifest_path=config.data.val_manifest,
+        manifest_path=val_manifest,
         audio_processor=audio_processor,
-        tokenizer=tokenizer
+        tokenizer=tokenizer,
+        data_dir=data_dir
     )
+    
+    if is_main:
+        train_speakers = len(set(s.get("speaker_id", "unknown") for s in train_dataset.samples))
+        print(f"Train samples: {len(train_dataset)}, Speakers: {train_speakers}")
+        print(f"Val samples: {len(val_dataset)}")
     
     # DataLoader (NO expansion here - we do it in train_step)
     if world_size > 1:
@@ -575,6 +597,14 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--autoencoder-checkpoint", type=str, required=True,
                         help="Path to pretrained autoencoder checkpoint")
+    parser.add_argument("--train-manifest", type=str, default=None,
+                        help="Override train manifest path")
+    parser.add_argument("--val-manifest", type=str, default=None,
+                        help="Override val manifest path")
+    parser.add_argument("--data_dir", "--data-dir", type=str, default=None,
+                        help="Base directory for audio files")
+    parser.add_argument("--output_dir", "--output-dir", type=str, default=None,
+                        help="Output directory for checkpoints")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of DataLoader workers")

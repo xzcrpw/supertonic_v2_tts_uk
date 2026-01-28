@@ -461,15 +461,17 @@ def main(args):
     for param in latent_encoder.parameters():
         param.requires_grad = False
     
-    # Text-to-Latent model
+    # Text-to-Latent model config
+    ttl_config = config.model.text_to_latent
+    
     text_to_latent = TextToLatent(
         latent_dim=144,  # Compressed: 24 * 6
         vocab_size=tokenizer.vocab_size,
-        text_embed_dim=config.text_to_latent.text_encoder.embed_dim,
-        text_hidden_dim=config.text_to_latent.text_encoder.hidden_dim,
-        ref_hidden_dim=config.text_to_latent.reference_encoder.hidden_dim,
-        vf_hidden_dim=config.text_to_latent.vector_field.hidden_dim,
-        num_ref_vectors=config.text_to_latent.reference_encoder.num_output_vectors,
+        text_embed_dim=ttl_config.text_encoder.embed_dim,
+        text_hidden_dim=ttl_config.text_encoder.hidden_dim,
+        ref_hidden_dim=ttl_config.reference_encoder.hidden_dim,
+        vf_hidden_dim=ttl_config.vector_field.hidden_dim,
+        num_ref_vectors=ttl_config.reference_encoder.num_output_vectors,
         gamma=config.larope.gamma,
         sigma_min=config.flow_matching.sigma_min,
         p_uncond=config.flow_matching.p_uncond,

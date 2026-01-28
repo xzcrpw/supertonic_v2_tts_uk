@@ -202,42 +202,17 @@ def synthesize_with_gt_duration(
     target_compressed = compress_latents(target_latent, compression_factor=6)
     target_length = target_compressed.shape[2]  # This is our target output length
     
-    # 4. Encode reference and text
-    reference_encoding = text_to_latent.encode_reference(ref_compressed, ref_mask=None)
-    text_encoding = text_to_latent.encode_text(text_ids, reference_encoding, text_mask)
+    # 4. Use model's built-in generate() method
+    generated_compressed = text_to_latent.generate(
+        text=text_ids,
+        ref_latent=ref_compressed,
+        num_frames=target_length,
+        nfe=nfe,
+        cfg_scale=cfg_scale,
+        text_mask=text_mask,
+    )
     
-    # 5. Sample latents using flow-matching ODE
-    # Start from noise
-    z0 = torch.randn(1, 144, target_length, device=device)  # [1, 144, T]
-    
-    # Simple Euler ODE solver
-    dt = 1.0 / nfe
-    z = z0
-    
-    for i in range(nfe):
-        t = torch.full((1,), i * dt, device=device)
-        
-        # Get velocity from vector field
-        velocity = text_to_latent.vector_field(
-            z, text_encoding, reference_encoding, t, text_mask
-        )
-        
-        # CFG if scale > 1
-        if cfg_scale > 1.0:
-            # Unconditional (zeros for text encoding)
-            uncond_text = torch.zeros_like(text_encoding)
-            velocity_uncond = text_to_latent.vector_field(
-                z, uncond_text, reference_encoding, t, text_mask
-            )
-            velocity = velocity_uncond + cfg_scale * (velocity - velocity_uncond)
-        
-        # Euler step
-        z = z + velocity * dt
-    
-    # z is now z1 (the generated compressed latent)
-    generated_compressed = z  # [1, 144, T]
-    
-    # 6. Decompress and decode
+    # 5. Decompress and decode
     generated_latent = decompress_latents(generated_compressed, compression_factor=6)  # [1, 24, T*6]
     generated_audio = latent_decoder(generated_latent)  # [1, T_audio]
     

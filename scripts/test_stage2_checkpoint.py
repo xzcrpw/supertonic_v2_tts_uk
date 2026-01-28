@@ -259,7 +259,21 @@ def discover_test_samples(manifest_path: str, num_samples: int = 10, dataset_fil
         dataset_filter: Optional filter by dataset name (e.g., 'opentts' for Ukrainian)
     """
     with open(manifest_path, "r", encoding="utf-8") as f:
-        samples = json.load(f)
+        content = f.read()
+    
+    # Support both JSON array and JSON Lines
+    try:
+        samples = json.loads(content)
+        if not isinstance(samples, list):
+            samples = [samples]
+    except json.JSONDecodeError:
+        samples = []
+        for line in content.strip().split('\n'):
+            if line.strip():
+                try:
+                    samples.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
     
     # Filter by dataset if specified (do this first, before text filter)
     if dataset_filter:

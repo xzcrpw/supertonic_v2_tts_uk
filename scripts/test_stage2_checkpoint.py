@@ -118,6 +118,11 @@ def load_text_to_latent(checkpoint_path: str, config: dict, device: str = "cuda"
     
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
+    # Detect vocab_size from checkpoint weights
+    state_dict = strip_ddp_prefix(checkpoint["model"])
+    vocab_size = state_dict["text_encoder.char_embed.embedding.weight"].shape[0]
+    print(f"   Detected vocab_size: {vocab_size}")
+    
     # Get config
     ttl_config = config.get("model", {}).get("text_to_latent", config.get("text_to_latent", {}))
     ref_config = ttl_config.get("reference_encoder", {})
@@ -127,7 +132,7 @@ def load_text_to_latent(checkpoint_path: str, config: dict, device: str = "cuda"
     # Create model with simplified interface
     model = TextToLatent(
         latent_dim=ref_config.get("input_dim", 144),
-        vocab_size=text_config.get("vocab_size", 512),
+        vocab_size=vocab_size,  # Use detected vocab_size
         text_embed_dim=text_config.get("embed_dim", 128),
         text_hidden_dim=text_config.get("hidden_dim", 512),
         ref_hidden_dim=ref_config.get("hidden_dim", 128),

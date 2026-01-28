@@ -154,8 +154,9 @@ def main():
     tts.to(device).eval()
     print("✓ TTS loaded")
     
-    # Tokenizer
-    tokenizer = CharacterTokenizer()
+    # Tokenizer - MUST match training config!
+    # Training used languages=["uk"] which gives vocab_size=104
+    tokenizer = CharacterTokenizer(languages=["uk"])
     print(f"✓ Tokenizer loaded, vocab size: {tokenizer.vocab_size}")
     
     # ========== 3. Load test sample ==========

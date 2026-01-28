@@ -451,7 +451,10 @@ def main(args):
     
     if args.autoencoder_checkpoint:
         ae_ckpt = torch.load(args.autoencoder_checkpoint, map_location=device)
-        latent_encoder.load_state_dict(ae_ckpt["encoder"])
+        encoder_state = ae_ckpt["encoder"]
+        # Remove "module." prefix if saved with DDP
+        encoder_state = {k.replace("module.", ""): v for k, v in encoder_state.items()}
+        latent_encoder.load_state_dict(encoder_state)
         print(f"Loaded latent encoder from {args.autoencoder_checkpoint}")
     
     latent_encoder.eval()

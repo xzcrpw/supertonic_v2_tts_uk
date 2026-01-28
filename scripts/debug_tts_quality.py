@@ -263,8 +263,16 @@ def main():
         
         print(f"Tokens tensor shape: {tokens_t.shape}")
         
-        # Generate
-        gen_compressed = tts.inference(tokens_t, compressed, num_steps=32)
+        # Generate with TTS
+        # num_frames should match compressed GT frames
+        num_frames = compressed.shape[-1]
+        gen_compressed = tts.generate(
+            text=tokens_t,
+            ref_latent=compressed,
+            num_frames=num_frames,
+            nfe=32,
+            cfg_scale=3.0
+        )
         print(f"Generated shape: {gen_compressed.shape}")
         
         print(f"\nGenerated compressed stats:")

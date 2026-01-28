@@ -441,11 +441,12 @@ def main(args):
     )
     
     # Load pretrained latent encoder (frozen)
+    ae_config = config.model.autoencoder
     latent_encoder = LatentEncoder(
-        input_dim=config.autoencoder.encoder.input_dim,
-        hidden_dim=config.autoencoder.encoder.hidden_dim,
-        output_dim=config.autoencoder.encoder.output_dim,
-        num_blocks=config.autoencoder.encoder.num_blocks
+        input_dim=ae_config.encoder.input_dim,
+        hidden_dim=ae_config.encoder.hidden_dim,
+        output_dim=ae_config.encoder.output_dim,
+        num_blocks=ae_config.encoder.num_blocks
     ).to(device)
     
     if args.autoencoder_checkpoint:

@@ -124,31 +124,19 @@ def load_text_to_latent(checkpoint_path: str, config: dict, device: str = "cuda"
     text_config = ttl_config.get("text_encoder", {})
     vf_config = ttl_config.get("vector_field", {})
     
-    # Create model
+    # Create model with simplified interface
     model = TextToLatent(
+        latent_dim=ref_config.get("input_dim", 144),
         vocab_size=text_config.get("vocab_size", 512),
         text_embed_dim=text_config.get("embed_dim", 128),
         text_hidden_dim=text_config.get("hidden_dim", 512),
-        text_num_convnext_blocks=text_config.get("num_convnext_blocks", 6),
-        text_num_self_attn_blocks=text_config.get("num_self_attn_blocks", 4),
-        text_num_cross_attn_layers=text_config.get("num_cross_attn_layers", 2),
-        text_num_heads=text_config.get("num_heads", 4),
-        text_kernel_size=text_config.get("kernel_size", 5),
-        ref_input_dim=ref_config.get("input_dim", 144),
         ref_hidden_dim=ref_config.get("hidden_dim", 128),
-        ref_num_convnext_blocks=ref_config.get("num_convnext_blocks", 6),
-        ref_num_cross_attn_layers=ref_config.get("num_cross_attn_layers", 2),
-        ref_num_output_vectors=ref_config.get("num_output_vectors", 50),
-        ref_kernel_size=ref_config.get("kernel_size", 5),
         vf_hidden_dim=vf_config.get("hidden_dim", 512),
-        vf_num_blocks=vf_config.get("num_blocks", 8),
-        vf_kernel_size=vf_config.get("kernel_size", 7),
-        vf_dilations=vf_config.get("dilations", [1, 2, 4, 8, 1, 2, 4, 8]),
-        vf_num_heads=vf_config.get("num_heads", 4),
-        gamma=config.get("larope", {}).get("gamma", 0.85),
+        num_ref_vectors=ref_config.get("num_output_vectors", 50),
         sigma_min=config.get("flow_matching", {}).get("sigma_min", 1e-4),
         p_uncond=0.0,  # No dropout at inference
         cfg_scale=config.get("flow_matching", {}).get("cfg_scale", 3.0),
+        gamma=config.get("larope", {}).get("gamma", 0.85),
     ).to(device)
     
     # Load weights

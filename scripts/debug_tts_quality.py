@@ -164,7 +164,25 @@ def main():
     print("=" * 60)
     
     with open('data/manifests_stage2/val.json') as f:
-        samples = [json.loads(l) for l in f]
+        content = f.read()
+    
+    # Try to parse - might be array or line-delimited JSON
+    try:
+        samples = json.loads(content)
+        if not isinstance(samples, list):
+            samples = [samples]
+    except json.JSONDecodeError:
+        # Line-delimited JSON, skip empty lines
+        samples = []
+        for line in content.strip().split('\n'):
+            line = line.strip()
+            if line:
+                try:
+                    samples.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    
+    print(f"Loaded {len(samples)} samples from manifest")
     
     # Find sample with text
     sample = None

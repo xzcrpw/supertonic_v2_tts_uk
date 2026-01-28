@@ -519,12 +519,14 @@ def download_libritts(
         sys.stdout.flush()
         
         print("   🔄 Processing audio files with {0} workers...".format(NUM_WORKERS))
+        print("   ⏳ Preparing data (this may take a moment for large datasets)...")
+        sys.stdout.flush()
         
-        items_to_process = list(enumerate(ds))
         lock = __import__('threading').Lock()
+        results = []
         
-        def process_libritts_item(args):
-            idx, item = args
+        def process_libritts_item(idx_item):
+            idx, item = idx_item
             try:
                 audio = item["audio"]
                 speaker = str(item["speaker_id"])
@@ -562,16 +564,24 @@ def download_libritts(
             except:
                 return None
         
-        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            results = list(tqdm(
-                executor.map(process_libritts_item, items_to_process),
-                desc=f"LibriTTS {subset}",
-                total=len(items_to_process)
-            ))
+        # Process in batches to avoid memory issues with large datasets
+        batch_size = 5000
+        total = len(ds)
         
-        for r in results:
-            if r is not None:
-                entries.append(r)
+        for batch_start in range(0, total, batch_size):
+            batch_end = min(batch_start + batch_size, total)
+            batch_items = [(i, ds[i]) for i in range(batch_start, batch_end)]
+            
+            with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                batch_results = list(tqdm(
+                    executor.map(process_libritts_item, batch_items),
+                    desc=f"LibriTTS {subset} [{batch_start//1000}k-{batch_end//1000}k]",
+                    total=len(batch_items)
+                ))
+            
+            for r in batch_results:
+                if r is not None:
+                    entries.append(r)
         
         print(f"   ✅ LibriTTS-R {subset}: {len(entries)} samples, {len(speakers)} speakers")
         

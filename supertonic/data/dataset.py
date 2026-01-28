@@ -75,9 +75,25 @@ class AutoencoderDataset(Dataset):
         self._cache = {} if cache_audio else None
     
     def _load_manifest(self) -> List[Dict]:
-        """Завантажує manifest file."""
+        """Завантажує manifest file (JSON array or JSON Lines)."""
         with open(self.manifest_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            content = f.read()
+        
+        # Try JSON array first, then JSON Lines
+        try:
+            data = json.loads(content)
+            if not isinstance(data, list):
+                data = [data]
+        except json.JSONDecodeError:
+            # JSON Lines format
+            data = []
+            for line in content.strip().split('\n'):
+                line = line.strip()
+                if line:
+                    try:
+                        data.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
         
         # Filter by duration
         samples = []
@@ -184,9 +200,25 @@ class TTSDataset(Dataset):
         self.speaker_to_samples = self._group_by_speaker()
     
     def _load_manifest(self) -> List[Dict]:
-        """Завантажує manifest."""
+        """Завантажує manifest (JSON array or JSON Lines)."""
         with open(self.manifest_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            content = f.read()
+        
+        # Try JSON array first, then JSON Lines
+        try:
+            data = json.loads(content)
+            if not isinstance(data, list):
+                data = [data]
+        except json.JSONDecodeError:
+            # JSON Lines format
+            data = []
+            for line in content.strip().split('\n'):
+                line = line.strip()
+                if line:
+                    try:
+                        data.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
         
         samples = []
         for item in data:
@@ -315,9 +347,25 @@ class DurationDataset(Dataset):
         self.samples = self._load_manifest()
     
     def _load_manifest(self) -> List[Dict]:
-        """Завантажує manifest."""
+        """Завантажує manifest (JSON array or JSON Lines)."""
         with open(self.manifest_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            content = f.read()
+        
+        # Try JSON array first, then JSON Lines
+        try:
+            data = json.loads(content)
+            if not isinstance(data, list):
+                data = [data]
+        except json.JSONDecodeError:
+            # JSON Lines format
+            data = []
+            for line in content.strip().split('\n'):
+                line = line.strip()
+                if line:
+                    try:
+                        data.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
         
         samples = []
         for item in data:

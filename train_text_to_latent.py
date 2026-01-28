@@ -448,7 +448,9 @@ def main(args):
         input_dim=ae_config.encoder.input_dim,
         hidden_dim=ae_config.encoder.hidden_dim,
         output_dim=ae_config.encoder.output_dim,
-        num_blocks=ae_config.encoder.num_blocks
+        num_blocks=ae_config.encoder.num_blocks,
+        kernel_size=ae_config.encoder.kernel_size,
+        intermediate_mult=ae_config.encoder.get("intermediate_mult", 4)
     ).to(device)
     
     if args.autoencoder_checkpoint:

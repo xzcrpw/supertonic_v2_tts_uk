@@ -45,7 +45,7 @@ BOLD='\033[1m'
 # ═══════════════════════════════════════════════════════════════════════════════
 
 find_autoencoder_checkpoint() {
-    local dirs="checkpoints/autoencoder outputs/autoencoder_hifigan/checkpoints/autoencoder"
+    local dirs="checkpoints/autoencoder outputs/autoencoder/checkpoints outputs/autoencoder_hifigan/checkpoints/autoencoder"
     for dir in $dirs; do
         if [[ -d "$dir" ]]; then
             local latest=$(ls -1 "$dir"/checkpoint_*.pt 2>/dev/null | \
@@ -91,12 +91,27 @@ show_gpu_status() {
 check_manifests() {
     if [[ ! -f "${MANIFEST_DIR}/train.json" ]]; then
         echo -e "${RED}❌ Stage 2 manifests not found!${NC}"
-        echo -e "   Run: ${CYAN}python scripts/prepare_data_stage2.py --medium${NC}"
+        echo -e "   Run: ${CYAN}python scripts/prepare_data.py${NC}"
         return 1
     fi
     
-    local train_count=$(python3 -c "import json; print(len(json.load(open('${MANIFEST_DIR}/train.json'))))" 2>/dev/null || echo "0")
-    local speaker_count=$(python3 -c "import json; print(len(set(e['speaker_id'] for e in json.load(open('${MANIFEST_DIR}/train.json')))))" 2>/dev/null || echo "0")
+    # Support both JSON array and JSON Lines format
+    local train_count=$(python3 -c "
+import json
+try:
+    data = json.load(open('${MANIFEST_DIR}/train.json'))
+except:
+    data = [json.loads(l) for l in open('${MANIFEST_DIR}/train.json') if l.strip()]
+print(len(data))
+" 2>/dev/null || echo "0")
+    local speaker_count=$(python3 -c "
+import json
+try:
+    data = json.load(open('${MANIFEST_DIR}/train.json'))
+except:
+    data = [json.loads(l) for l in open('${MANIFEST_DIR}/train.json') if l.strip()]
+print(len(set(e.get('speaker_id', 'unk') for e in data)))
+" 2>/dev/null || echo "0")
     
     echo -e "   Train samples: ${train_count}, Speakers: ${speaker_count}"
     return 0

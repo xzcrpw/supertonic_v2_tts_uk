@@ -119,7 +119,7 @@ flow_matching:
 
 # ========== LANGUAGES ==========
 languages:
-  supported: ["uk"]           # Ukrainian only for now
+  supported: ["uk", "en"]     # Ukrainian + English for zero-shot from LibriTTS
   embedding_dim: 4
 
 # ========== TRAINING: AUTOENCODER (Stage 1) ==========

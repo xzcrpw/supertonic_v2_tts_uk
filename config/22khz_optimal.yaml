@@ -177,9 +177,9 @@ train_autoencoder:
 
 # ========== TRAINING: TEXT-TO-LATENT (Stage 2) ==========
 train_tts:
-  batch_size: 64
+  batch_size: 32              # Per GPU (32×4 GPUs = 128 base, ×4 expansion = 512 effective)
   expansion_factor: 4         # Ke for context sharing
-  effective_batch: 256        # batch × expansion
+  effective_batch: 512        # batch × GPUs × expansion
   
   learning_rate: 5.0e-4
   optimizer:

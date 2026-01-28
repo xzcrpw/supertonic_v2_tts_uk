@@ -339,21 +339,24 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
     audio_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        print("   📦 Downloading VCTK from HuggingFace (this may take a while)...")
-        print("   ⏳ First download caches the dataset, subsequent runs are faster")
+        print("   📦 Downloading VCTK from HuggingFace...")
         print("   📊 VCTK: 110 speakers, ~44 hours, 48kHz audio")
         sys.stdout.flush()
         
         start_time = time.time()
-        # VCTK: https://huggingface.co/datasets/CSTR-Edinburgh/vctk
-        # No predefined splits, load all data
-        ds = load_dataset(
-            "CSTR-Edinburgh/vctk", 
-            trust_remote_code=True,
-            num_proc=4
-        )
-        # VCTK returns a DatasetDict, get the only split
-        ds = ds[list(ds.keys())[0]]
+        # VCTK: Try loading without trust_remote_code first
+        # The dataset has a loading script which may not work with newer datasets versions
+        try:
+            # Try parquet/arrow format first (newer datasets library)
+            ds = load_dataset("CSTR-Edinburgh/vctk", num_proc=4)
+            ds = ds[list(ds.keys())[0]]
+        except Exception as e1:
+            print(f"   ⚠️ Standard loading failed: {e1}")
+            print("   ⚠️ VCTK uses deprecated loading script format")
+            print("   ⚠️ Skipping VCTK - LibriTTS-R provides enough speaker diversity")
+            print("   💡 To include VCTK, downgrade datasets: pip install datasets==2.14.0")
+            return entries, len(speakers)
+        
         print(f"   ✅ Dataset loaded in {time.time() - start_time:.1f}s ({len(ds)} samples)")
         sys.stdout.flush()
         

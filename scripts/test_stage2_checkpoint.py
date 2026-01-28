@@ -183,11 +183,11 @@ def synthesize_with_gt_duration(
     text_ids = torch.tensor(text_ids, dtype=torch.long, device=device).unsqueeze(0)  # [1, L]
     text_mask = torch.ones_like(text_ids, dtype=torch.bool)
     
-    # 2. Compute reference mel and encode
+    # 2. Compute reference mel and encode (mel computation on CPU, then move to GPU)
     if reference_audio.dim() == 1:
         reference_audio = reference_audio.unsqueeze(0)
-    reference_audio = reference_audio.to(device)
-    ref_mel = audio_processor.compute_mel(reference_audio, log_scale=True)  # [1, n_mels, T_ref]
+    ref_mel = audio_processor.compute_mel(reference_audio.cpu(), log_scale=True)  # [1, n_mels, T_ref]
+    ref_mel = ref_mel.to(device)
     
     # Encode reference to latent
     ref_latent = latent_encoder(ref_mel)  # [1, 24, T_ref_latent]
@@ -196,8 +196,8 @@ def synthesize_with_gt_duration(
     # 3. Get target duration from target audio
     if target_audio.dim() == 1:
         target_audio = target_audio.unsqueeze(0)
-    target_audio = target_audio.to(device)
-    target_mel = audio_processor.compute_mel(target_audio, log_scale=True)
+    target_mel = audio_processor.compute_mel(target_audio.cpu(), log_scale=True)
+    target_mel = target_mel.to(device)
     target_latent = latent_encoder(target_mel)
     target_compressed = compress_latents(target_latent, compression_factor=6)
     target_length = target_compressed.shape[2]  # This is our target output length
@@ -389,7 +389,7 @@ def main():
         n_fft=config["audio"]["n_fft"],
         hop_length=config["audio"]["hop_length"],
         n_mels=config["audio"]["n_mels"],
-    ).to(device)  # Move to GPU
+    )  # Stays on CPU, we'll move mel to GPU after
     
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -459,10 +459,10 @@ def main():
                 config["audio"]["sample_rate"]
             )
             
-            # Compute mel for comparison
+            # Compute mel for comparison (on CPU)
             with torch.no_grad():
-                orig_mel = audio_processor.compute_mel(target_audio.unsqueeze(0).to(device), log_scale=True)
-                gen_mel = audio_processor.compute_mel(generated_audio.unsqueeze(0).to(device), log_scale=True)
+                orig_mel = audio_processor.compute_mel(target_audio.unsqueeze(0), log_scale=True)
+                gen_mel = audio_processor.compute_mel(generated_audio.unsqueeze(0), log_scale=True)
                 
                 # Mel L1
                 min_len = min(orig_mel.shape[2], gen_mel.shape[2])
@@ -473,8 +473,8 @@ def main():
             # Plot
             if MATPLOTLIB_AVAILABLE:
                 plot_comparison(
-                    orig_mel.squeeze(0).cpu(),
-                    gen_mel.squeeze(0).cpu(),
+                    orig_mel.squeeze(0),
+                    gen_mel.squeeze(0),
                     str(output_dir / f"{sample_name}_comparison.png"),
                     title=f"Sample {i+1}: {sample['text'][:50]}..."
                 )

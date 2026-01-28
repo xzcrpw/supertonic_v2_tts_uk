@@ -261,13 +261,14 @@ def discover_test_samples(manifest_path: str, num_samples: int = 10, dataset_fil
     with open(manifest_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
     
-    # Filter samples with text
-    samples = [s for s in samples if s.get("text")]
-    
-    # Filter by dataset if specified
+    # Filter by dataset if specified (do this first, before text filter)
     if dataset_filter:
         samples = [s for s in samples if dataset_filter.lower() in s.get("audio_path", "").lower()]
         print(f"   Filtered to {len(samples)} samples matching '{dataset_filter}'")
+    
+    # Filter samples with text (only if not filtering by dataset - OpenTTS may have empty text)
+    if not dataset_filter:
+        samples = [s for s in samples if s.get("text")]
     
     # Random sample
     if len(samples) > num_samples:

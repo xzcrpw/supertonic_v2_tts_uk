@@ -105,6 +105,24 @@ def check_dependencies():
 # AUDIO PROCESSING
 # ============================================================================
 
+def get_audio_duration(audio_path: str, target_sr: int = 22050) -> float:
+    """Get audio duration in seconds. Works with different torchaudio versions."""
+    try:
+        # Try torchaudio.info first (older versions)
+        if hasattr(torchaudio, 'info'):
+            info = torchaudio.info(str(audio_path))
+            return info.num_frames / info.sample_rate
+    except:
+        pass
+    
+    # Fallback: load audio and calculate duration
+    try:
+        waveform, sr = torchaudio.load(str(audio_path))
+        return waveform.shape[1] / sr
+    except:
+        return 0.0
+
+
 def process_audio_file(args) -> Optional[Dict]:
     """Process single audio file."""
     audio_path, output_path, text, speaker_id, target_sr, source, language = args
@@ -170,8 +188,9 @@ def download_opentts(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dic
                     audio_path = voice_dir / f"{voice_name}_{idx:06d}.wav"
                     if audio_path.exists():
                         text = item.get("text", item.get("sentence", ""))
-                        info = torchaudio.info(str(audio_path))
-                        duration = info.num_frames / info.sample_rate
+                        duration = get_audio_duration(audio_path, target_sr)
+                        if duration is None:
+                            continue
                         
                         entries.append({
                             "audio_path": str(audio_path.relative_to(output_dir)),
@@ -259,8 +278,9 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
                 
                 for wav_file in spk_dir.glob("*.wav"):
                     try:
-                        info = torchaudio.info(str(wav_file))
-                        duration = info.num_frames / info.sample_rate
+                        duration = get_audio_duration(wav_file, target_sr)
+                        if duration is None:
+                            continue
                         
                         # VCTK text files
                         txt_file = wav_file.with_suffix('.txt')
@@ -390,8 +410,9 @@ def download_libritts(
                     speaker_id = f"libritts_{speaker}"
                     speakers.add(speaker_id)
                     
-                    info = torchaudio.info(str(wav_file))
-                    duration = info.num_frames / info.sample_rate
+                    duration = get_audio_duration(wav_file, target_sr)
+                    if duration is None:
+                        continue
                     
                     # Load normalized text
                     txt_file = wav_file.with_suffix('.normalized.txt')

@@ -248,16 +248,20 @@ def main():
         print("STEP 5: Comparing GT vs Generated latents")
         print("=" * 60)
         
-        print(f"GT compressed stats:")
-        print(f"  mean: {compressed.mean():.4f}")
-        print(f"  std:  {compressed.std():.4f}")
-        print(f"  min:  {compressed.min():.4f}")
-        print(f"  max:  {compressed.max():.4f}")
+        print(f"GT compressed - mean: {compressed.mean():.4f}, std: {compressed.std():.4f}")
+        print(f"               min: {compressed.min():.4f}, max: {compressed.max():.4f}")
         
         # Tokenize
         tokens = tokenizer.encode(sample['text'])
-        tokens_t = torch.tensor([tokens], device=device)
-        print(f"\nTokens shape: {tokens_t.shape}")
+        print(f"\nTokens type: {type(tokens)}, value: {tokens[:20] if hasattr(tokens, '__len__') else tokens}...")
+        
+        # Convert to tensor properly
+        if isinstance(tokens, torch.Tensor):
+            tokens_t = tokens.unsqueeze(0).to(device) if tokens.dim() == 1 else tokens.to(device)
+        else:
+            tokens_t = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0)
+        
+        print(f"Tokens tensor shape: {tokens_t.shape}")
         
         # Generate
         gen_compressed = tts.inference(tokens_t, compressed, num_steps=32)

@@ -210,7 +210,16 @@ def main():
         win_length=1024, n_mels=100, f_min=20.0, f_max=11025.0, power=1.0
     ).to(device)
     
-    audio, sr = torchaudio.load(sample['audio_path'])
+    # Handle relative paths - prepend data/ if needed
+    audio_path = sample['audio_path']
+    if not os.path.exists(audio_path):
+        if os.path.exists(f"data/{audio_path}"):
+            audio_path = f"data/{audio_path}"
+        elif os.path.exists(audio_path.replace('audio/', 'data/audio/')):
+            audio_path = audio_path.replace('audio/', 'data/audio/')
+    
+    print(f"Loading: {audio_path}")
+    audio, sr = torchaudio.load(audio_path)
     if sr != 22050:
         audio = torchaudio.functional.resample(audio, sr, 22050)
     audio = audio.mean(0, keepdim=True).to(device)  # [1, samples]

@@ -321,11 +321,19 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
     try:
         print("   📦 Downloading VCTK from HuggingFace (this may take a while)...")
         print("   ⏳ First download caches the dataset, subsequent runs are faster")
+        print("   📊 VCTK: 110 speakers, ~44 hours, 48kHz audio")
         sys.stdout.flush()
         
         start_time = time.time()
         # VCTK: https://huggingface.co/datasets/CSTR-Edinburgh/vctk
-        ds = load_dataset("CSTR-Edinburgh/vctk", split="train", num_proc=4)
+        # No predefined splits, load all data
+        ds = load_dataset(
+            "CSTR-Edinburgh/vctk", 
+            trust_remote_code=True,
+            num_proc=4
+        )
+        # VCTK returns a DatasetDict, get the only split
+        ds = ds[list(ds.keys())[0]]
         print(f"   ✅ Dataset loaded in {time.time() - start_time:.1f}s ({len(ds)} samples)")
         sys.stdout.flush()
         
@@ -459,11 +467,11 @@ def download_libritts(
         sys.stdout.flush()
         
         start_time = time.time()
-        # LibriTTS-R: config="clean", split="train.clean.100" or "train.clean.360"
-        # Subset mapping: clean-100 -> train.clean.100, clean-360 -> train.clean.360
+        # LibriTTS-R: https://huggingface.co/datasets/mythicinfinity/libritts_r
+        # Config: "clean", Splits: "train.clean.100", "train.clean.360"
         split_name = f"train.{subset.replace('-', '.')}"
         ds = load_dataset(
-            "blabble-io/libritts_r",
+            "mythicinfinity/libritts_r",
             "clean",  # config name
             split=split_name,  # e.g., "train.clean.100"
             num_proc=4

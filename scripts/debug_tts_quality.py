@@ -8,6 +8,9 @@ import sys
 import os
 import glob
 
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 def find_tts_checkpoint():
     """Find the latest TTS checkpoint in various possible locations."""
     search_paths = [
@@ -64,22 +67,26 @@ def main():
     print(f"TTS checkpoint keys: {list(tts_ckpt.keys())}")
     
     # Determine the correct key for model weights
-    if 'model_state_dict' in enc_ckpt:
-        enc_state = enc_ckpt['model_state_dict']
-    elif 'state_dict' in enc_ckpt:
-        enc_state = enc_ckpt['state_dict']
+    # Autoencoder has 'encoder' and 'decoder' keys directly
+    if 'encoder' in enc_ckpt:
+        enc_state = enc_ckpt['encoder']
+        dec_state = enc_ckpt['decoder']
+    elif 'model_state_dict' in enc_ckpt:
+        enc_state = {k.replace('encoder.', ''): v for k, v in enc_ckpt['model_state_dict'].items() if k.startswith('encoder.')}
+        dec_state = {k.replace('decoder.', ''): v for k, v in enc_ckpt['model_state_dict'].items() if k.startswith('decoder.')}
     else:
-        # Maybe the checkpoint IS the state dict
         enc_state = enc_ckpt
+        dec_state = enc_ckpt
     
-    if 'model_state_dict' in tts_ckpt:
+    # TTS has 'model' key directly
+    if 'model' in tts_ckpt:
+        tts_state = tts_ckpt['model']
+    elif 'model_state_dict' in tts_ckpt:
         tts_state = tts_ckpt['model_state_dict']
-    elif 'state_dict' in tts_ckpt:
-        tts_state = tts_ckpt['state_dict']
     else:
         tts_state = tts_ckpt
     
-    print(f"\nAutoencoder state dict - first 5 keys: {list(enc_state.keys())[:5]}")
+    print(f"\nEncoder state dict - first 5 keys: {list(enc_state.keys())[:5]}")
     print(f"TTS state dict - first 5 keys: {list(tts_state.keys())[:5]}")
     
     # ========== 2. Load models ==========
@@ -96,11 +103,7 @@ def main():
         input_dim=100, hidden_dim=512, output_dim=24,
         num_blocks=10, kernel_size=7, intermediate_mult=4
     )
-    enc_keys = {k.replace('encoder.', ''): v for k, v in enc_state.items() if k.startswith('encoder.')}
-    if not enc_keys:
-        # Maybe no prefix
-        enc_keys = enc_state
-    enc.load_state_dict(enc_keys)
+    enc.load_state_dict(enc_state)
     enc.to(device).eval()
     print("✓ Encoder loaded")
     
@@ -114,10 +117,7 @@ def main():
         resblock_kernel_sizes=[3,7,11],
         resblock_dilation_sizes=[[1,3,5],[1,3,5],[1,3,5]]
     )
-    dec_keys = {k.replace('decoder.', ''): v for k, v in enc_state.items() if k.startswith('decoder.')}
-    if not dec_keys:
-        dec_keys = enc_state
-    dec.load_state_dict(dec_keys)
+    dec.load_state_dict(dec_state)
     dec.to(device).eval()
     print("✓ Decoder loaded")
     

@@ -42,11 +42,24 @@ import json
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import tarfile
 import shutil
+import time
 
-NUM_WORKERS = 8
+NUM_WORKERS = 16  # Parallel audio processing
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Fallback if tqdm not installed
+    def tqdm(iterable, **kwargs):
+        total = kwargs.get('total', None)
+        desc = kwargs.get('desc', '')
+        for i, item in enumerate(iterable):
+            if total and i % max(1, total // 20) == 0:
+                print(f"   {desc}: {i}/{total} ({100*i/total:.0f}%)")
+            yield item
 
 try:
     import torch
@@ -207,12 +220,13 @@ def download_opentts(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dic
             continue
         
         print(f"\n   📥 {voice_name} ({expected_rows} samples)")
+        sys.stdout.flush()
         
         try:
             ds = load_dataset(repo_id, split="train")
             voice_dir.mkdir(exist_ok=True)
             
-            for idx, item in enumerate(ds):
+            for idx, item in tqdm(enumerate(ds), desc=voice_name, total=len(ds)):
                 audio_array = item["audio"]["array"]
                 sr = item["audio"]["sampling_rate"]
                 text = item.get("text", item.get("sentence", ""))
@@ -236,9 +250,6 @@ def download_opentts(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dic
                     "source": "opentts",
                     "language": "uk",
                 })
-                
-                if (idx + 1) % 1000 == 0:
-                    print(f"      Processed {idx + 1}/{expected_rows}...")
             
             speakers.add(f"opentts_{voice_name}")
             print(f"   ✅ {voice_name}: {len([e for e in entries if e['speaker_id'] == f'opentts_{voice_name}'])} samples")
@@ -306,11 +317,17 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
     audio_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        print("   📦 Downloading VCTK from HuggingFace...")
-        ds = load_dataset("speechcolab/vctk", split="train", streaming=True)
+        print("   📦 Downloading VCTK from HuggingFace (this may take a while)...")
+        print("   ⏳ First download caches the dataset, subsequent runs are faster")
+        sys.stdout.flush()
         
-        processed = 0
-        for item in ds:
+        start_time = time.time()
+        ds = load_dataset("speechcolab/vctk", split="train", num_proc=4)
+        print(f"   ✅ Dataset loaded in {time.time() - start_time:.1f}s ({len(ds)} samples)")
+        sys.stdout.flush()
+        
+        print("   🔄 Processing audio files...")
+        for item in tqdm(ds, desc="VCTK", total=len(ds)):
             try:
                 audio = item["audio"]
                 speaker = item["speaker_id"]
@@ -330,7 +347,7 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
                     resampler = torchaudio.transforms.Resample(sr, target_sr)
                     waveform = resampler(waveform)
                 
-                filename = f"{speaker}_{processed:06d}.wav"
+                filename = f"{speaker}_{len(entries):06d}.wav"
                 audio_path = speaker_dir / filename
                 torchaudio.save(str(audio_path), waveform, target_sr)
                 
@@ -345,15 +362,11 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
                     "source": "vctk",
                     "language": "en",
                 })
-                
-                processed += 1
-                if processed % 5000 == 0:
-                    print(f"      Processed {processed}...")
                     
             except Exception as e:
                 continue
         
-        print(f"   ✅ VCTK: {processed} samples, {len(speakers)} speakers")
+        print(f"   ✅ VCTK: {len(entries)} samples, {len(speakers)} speakers")
         
     except Exception as e:
         print(f"   ❌ Error downloading VCTK: {e}")
@@ -439,21 +452,27 @@ def download_libritts(
     
     try:
         print(f"   📦 Downloading LibriTTS-R {subset} from HuggingFace...")
+        print("   ⏳ This is a large dataset, download may take 10-30 minutes...")
+        sys.stdout.flush()
+        
+        start_time = time.time()
         # LibriTTS-R on HuggingFace: blabble-io/libritts_r
         ds = load_dataset(
             "blabble-io/libritts_r",
             subset.replace("-", "."),  # clean-100 -> clean.100
             split="train",
-            streaming=True
+            num_proc=4
         )
+        print(f"   ✅ Dataset loaded in {time.time() - start_time:.1f}s ({len(ds)} samples)")
+        sys.stdout.flush()
         
-        processed = 0
-        for item in ds:
+        print("   🔄 Processing audio files...")
+        for item in tqdm(ds, desc=f"LibriTTS {subset}", total=len(ds)):
             try:
                 audio = item["audio"]
                 speaker = str(item["speaker_id"])
                 text = item.get("text_normalized", item.get("text", ""))
-                utterance_id = item.get("id", str(processed))
+                utterance_id = item.get("id", str(len(entries)))
                 
                 speaker_dir = audio_dir / speaker
                 speaker_dir.mkdir(exist_ok=True)
@@ -484,15 +503,11 @@ def download_libritts(
                     "source": "libritts",
                     "language": "en",
                 })
-                
-                processed += 1
-                if processed % 10000 == 0:
-                    print(f"      Processed {processed}... ({len(speakers)} speakers)")
                     
             except Exception as e:
                 continue
         
-        print(f"   ✅ LibriTTS-R {subset}: {processed} samples, {len(speakers)} speakers")
+        print(f"   ✅ LibriTTS-R {subset}: {len(entries)} samples, {len(speakers)} speakers")
         
     except Exception as e:
         print(f"   ❌ Error downloading LibriTTS-R: {e}")

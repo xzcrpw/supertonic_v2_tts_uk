@@ -161,6 +161,7 @@ def context_sharing_batch_expansion(
 def train_step(
     batch: Dict[str, torch.Tensor],
     text_to_latent: nn.Module,
+    text_to_latent_raw: nn.Module,  # Unwrapped model for method access
     latent_encoder: nn.Module,
     optimizer: torch.optim.Optimizer,
     loss_fn: FlowMatchingLoss,
@@ -217,13 +218,13 @@ def train_step(
         
         # 4. Encode reference FIRST (needed for text encoding)
         # Note: ref_mask is not used as reference encoder outputs fixed 50 vectors
-        reference_encoding = text_to_latent.encode_reference(
+        reference_encoding = text_to_latent_raw.encode_reference(
             ref_compressed,
             ref_mask=None  # Skip mask - encoder produces fixed output anyway
         )
         
         # 5. Encode text WITH reference conditioning
-        text_encoding = text_to_latent.encode_text(
+        text_encoding = text_to_latent_raw.encode_text(
             text_ids_exp,
             reference_encoding,  # ref_vectors from reference encoder
             text_mask_exp,
@@ -232,7 +233,7 @@ def train_step(
         
         # 6. Flow-matching loss
         losses = loss_fn(
-            model=text_to_latent.vector_field,
+            model=text_to_latent_raw.vector_field,
             z1=target_exp,
             text_encoding=text_encoding,
             reference_encoding=reference_encoding,
@@ -274,6 +275,7 @@ def adjust_learning_rate(
 def validate(
     dataloader: DataLoader,
     text_to_latent: nn.Module,
+    text_to_latent_raw: nn.Module,  # Unwrapped model for method access
     latent_encoder: nn.Module,
     loss_fn: FlowMatchingLoss,
     device: torch.device,
@@ -303,12 +305,12 @@ def validate(
         ref_compressed = compress_latents(ref_latent, compression_factor=6)
         
         # Encode conditioning - reference FIRST
-        reference_encoding = text_to_latent.encode_reference(ref_compressed)
-        text_encoding = text_to_latent.encode_text(text_ids, reference_encoding, text_mask)
+        reference_encoding = text_to_latent_raw.encode_reference(ref_compressed)
+        text_encoding = text_to_latent_raw.encode_text(text_ids, reference_encoding, text_mask)
         
         # Flow-matching loss
         losses = loss_fn(
-            model=text_to_latent.vector_field,
+            model=text_to_latent_raw.vector_field,
             z1=target_compressed,
             text_encoding=text_encoding,
             reference_encoding=reference_encoding,
@@ -482,6 +484,9 @@ def main(args):
     if world_size > 1:
         text_to_latent = DDP(text_to_latent, device_ids=[local_rank])
     
+    # Get unwrapped model for method access (DDP wraps in .module)
+    text_to_latent_raw = text_to_latent.module if hasattr(text_to_latent, 'module') else text_to_latent
+    
     # Loss
     loss_fn = FlowMatchingLoss(
         sigma_min=config.flow_matching.sigma_min,
@@ -537,7 +542,7 @@ def main(args):
             
             # Training step (з context-sharing всередині)
             losses = train_step(
-                batch, text_to_latent, latent_encoder,
+                batch, text_to_latent, text_to_latent_raw, latent_encoder,
                 optimizer, loss_fn, scaler, device,
                 expansion_factor=expansion_factor,
                 use_amp=config.train_tts.amp.enabled
@@ -561,7 +566,7 @@ def main(args):
             # Validation
             if is_main and iteration % validation_interval == 0:
                 val_metrics = validate(
-                    val_loader, text_to_latent, latent_encoder,
+                    val_loader, text_to_latent, text_to_latent_raw, latent_encoder,
                     loss_fn, device
                 )
                 

@@ -113,10 +113,11 @@ run_training_loop() {
     
     # Environment - 4 GPUs
     export CUDA_VISIBLE_DEVICES=0,1,2,3
+    export OMP_NUM_THREADS=4
     export NCCL_DEBUG=WARN
     export NCCL_IB_DISABLE=1
     export PYTHONUNBUFFERED=1
-    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+    export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
     
     echo "═══════════════════════════════════════════════════════════════"
     echo "🎤 SUPERTONIC v2 - Stage 2: Text-to-Latent Training Started"

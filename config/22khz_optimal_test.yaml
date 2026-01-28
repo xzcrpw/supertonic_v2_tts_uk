@@ -1,0 +1,261 @@
+# ============================================================================
+# SUPERTONIC V2 TTS - 22kHz OPTIMAL CONFIGURATION
+# ============================================================================
+# Based on SupertonicTTS paper (arXiv:2503.23108v3)
+#
+# Differences from paper (44.1kHz):
+#   - 22050Hz sample rate - reduces compute, sufficient for TTS
+#   - FFT sizes scaled by 0.5: [512, 1024, 2048] instead of [1024, 2048, 4096]
+#
+# Paper training config (Section 4.2):
+#   - Batch size: 128
+#   - Learning rate: 2×10⁻⁴
+#   - Iterations: 1.5M (we use 200k for budget)
+#   - Disc crop: 0.19s
+#   - Loss weights: λ_recon=45, λ_adv=1, λ_fm=0.1
+#   - Mel bands: [64, 128, 128] per FFT resolution
+# ============================================================================
+
+# ========== AUDIO CONFIGURATION ==========
+audio:
+  sample_rate: 22050          # TTS standard - 11kHz Nyquist is enough for speech
+  n_fft: 1024                 # Adjusted for 22kHz (46.4ms window)
+  hop_length: 256             # 11.6ms hop - same timing as 44.1kHz/512
+  win_length: 1024
+  n_mels: 100                 # Standard for 22kHz TTS (paper uses 228 @ 44.1kHz)
+  mel_fmin: 20.0
+  mel_fmax: 11025.0           # Nyquist limit for 22kHz
+
+# ========== MODEL ARCHITECTURE ==========
+model:
+  autoencoder:
+    # Encoder: mel(100) → hidden(512) → latent(24)
+    encoder:
+      input_dim: 100          # n_mels (scaled for 22kHz)
+      hidden_dim: 512
+      output_dim: 24          # latent dimension (paper spec)
+      num_blocks: 10          # 10 ConvNeXt blocks (paper spec)
+      kernel_size: 7
+      intermediate_mult: 4    # 512 * 4 = 2048 intermediate
+      gradient_checkpointing: false  # 96GB - not needed
+    
+    # Decoder: latent(24) → hidden(512) → HiFi-GAN → waveform
+    # NOTE: Using HiFi-GAN instead of WaveNeXt to eliminate metallic artifacts!
+    decoder:
+      input_dim: 24
+      hidden_dim: 512
+      num_blocks: 10
+      kernel_size: 7
+      intermediate_mult: 4
+      # Dilations from paper: receptive field ~1 second
+      dilations: [1, 2, 4, 1, 2, 4, 1, 1, 1, 1]
+      n_fft: 1024
+      hop_length: 256
+      causal: true            # For streaming inference
+      gradient_checkpointing: false
+      
+      # ========== HiFi-GAN GENERATOR CONFIG ==========
+      # CRITICAL: product of upsample_rates MUST equal hop_length!
+      # 8 * 8 * 2 * 2 = 256 ✓
+      use_hifigan: true       # Set false to use old WaveNeXtHead (causes metallic sound!)
+      upsample_rates: [8, 8, 2, 2]
+      upsample_kernel_sizes: [16, 16, 4, 4]  # kernel >= 2*stride to avoid checkerboard
+      upsample_initial_channel: 512
+      resblock_kernel_sizes: [3, 7, 11]      # Multi-receptive field fusion
+      resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+
+    # Discriminators (HiFi-GAN style)
+    discriminator:
+      mpd_periods: [2, 3, 5, 7, 11]
+      mrd_fft_sizes: [512, 1024, 2048]  # Paper spec - NOT scaled by sample rate!
+  
+  # Text-to-Latent (Stage 2)
+  text_to_latent:
+    reference_encoder:
+      input_dim: 144          # Compressed latent (24 * 6)
+      hidden_dim: 128
+      num_convnext_blocks: 6
+      num_cross_attn_layers: 2
+      num_output_vectors: 50  # Fixed reference vectors
+      kernel_size: 5
+      intermediate_mult: 4
+
+    text_encoder:
+      vocab_size: 512         # Extended multilingual
+      embed_dim: 128
+      hidden_dim: 512
+      num_convnext_blocks: 6
+      num_self_attn_blocks: 4
+      num_cross_attn_layers: 2
+      num_heads: 4
+      kernel_size: 5
+
+    vector_field:
+      hidden_dim: 512
+      num_blocks: 8
+      kernel_size: 7
+      dilations: [1, 2, 4, 8, 1, 2, 4, 8]
+      num_heads: 4
+
+  # Duration Predictor (Stage 3)
+  duration_predictor:
+    text_dim: 512
+    hidden_dim: 256
+    num_layers: 4
+    kernel_size: 3
+    dropout: 0.1
+
+# ========== LAROPE CONFIGURATION ==========
+larope:
+  gamma: 10                   # Paper optimal for TTS alignment
+  base: 10000
+
+# ========== FLOW MATCHING ==========
+flow_matching:
+  sigma_min: 1.0e-8
+  p_uncond: 0.05              # CFG dropout probability
+  cfg_scale: 3.0              # Classifier-free guidance scale
+  nfe: 32                     # Number of function evaluations
+
+# ========== LANGUAGES ==========
+languages:
+  supported: ["uk", "en"]     # Ukrainian + English for zero-shot from LibriTTS
+  embedding_dim: 4
+
+# ========== TRAINING: AUTOENCODER (Stage 1) ==========
+train_autoencoder:
+  # Batch size - PAPER: 128 total
+  # Fig.2 shows larger batch DEGRADES alignment in early training!
+  batch_size: 32              # Per GPU (32×4=128 effective batch) - EXACT paper value
+  segment_length: 88200       # 4 seconds at 22050Hz
+  gradient_accumulation_steps: 1
+  
+  # Optimizer - Paper uses lr=2e-4
+  learning_rate: 2.0e-4       # Paper: "learning rate of 2×10⁻⁴"
+  optimizer:
+    betas: [0.8, 0.99]        # AdamW betas from HiFi-GAN
+    weight_decay: 0.01
+  
+  # Schedule - OPTIMIZED FOR BUDGET
+  # Paper: 1.5M @ batch128. We have batch192 (1.5× more efficient)
+  # 200k steps ≈ 300k paper steps - enough for good autoencoder
+  total_iterations: 200000    # Budget-friendly, check quality at 50k/100k
+  warmup_steps: 5000          # LR warmup for fresh training
+  checkpoint_interval: 1000   # Every 1k - don't lose progress!
+  validation_interval: 10000  # Validate every 10k
+  log_interval: 50            # Log every 50 steps for better monitoring
+  
+  # Discriminator warmup - generator trains alone first
+  discriminator_start_steps: 5000  # Gen needs time to learn HiFi-GAN head
+  
+  # Loss weights - EXACT PAPER VALUES (Appendix B.1)
+  loss_weights:
+    reconstruction: 45.0       # Paper: λ_recon = 45
+    adversarial: 1.0           # Paper: λ_adv = 1
+    feature_matching: 0.1      # Paper: λ_fm = 0.1
+  
+  # Multi-resolution Mel Loss configuration
+  # Paper @ 44.1kHz: FFT [1024, 2048, 4096], Mels [64, 128, 128]
+  # Scaled for 22kHz: FFT sizes halved
+  loss_fft_sizes: [512, 1024, 2048]
+  loss_n_mels: [64, 128, 128]  # Paper: different per resolution!
+  
+  # Discriminator crop for adversarial training
+  # Paper: "we randomly cropped segments of real and generated speech to 0.19s"
+  disc_crop_length: 4189       # 0.19s at 22050Hz (paper spec)
+  
+  # AMP
+  amp:
+    enabled: true
+    dtype: bfloat16           # Best for Ampere+ GPUs
+  
+  # DataLoader - Balance speed vs memory
+  num_workers: 12               # Per GPU (4×4=16 workers) - minimal for stability
+  pin_memory: true
+  cache_audio: false           # DISABLED - workers duplicate cache = OOM
+  prefetch_factor: 6           # Low prefetch to reduce memory
+
+# ========== TRAINING: TEXT-TO-LATENT (Stage 2) ==========
+train_tts:
+  batch_size: 32              # Per GPU (32×4 expansion = 128 effective per GPU)
+  expansion_factor: 4         # Ke for context sharing
+  effective_batch: 512        # batch × GPUs × expansion
+  
+  learning_rate: 2.0e-4
+  optimizer:
+    type: AdamW
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+  
+  total_iterations: 500000
+  lr_halve_interval: 200000
+  checkpoint_interval: 2000
+  validation_interval: 5000
+  
+  amp:
+    enabled: true
+    dtype: bfloat16
+
+# ========== TRAINING: DURATION (Stage 3) ==========
+train_duration:
+  batch_size: 256
+  learning_rate: 5.0e-4
+  total_iterations: 5000
+  checkpoint_interval: 1000
+  
+  optimizer:
+    type: AdamW
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+# ========== INFERENCE ==========
+inference:
+  num_steps: 32               # ODE steps
+  solver: euler
+  cfg_scale: 3.0
+
+# ========== HARDWARE ==========
+hardware:
+  device: cuda
+  num_gpus: 1
+  
+optimization:
+  use_amp: true
+  amp_dtype: bfloat16
+  gradient_checkpointing: false  # 96GB - not needed
+  compile_model: false           # torch.compile experimental
+
+# ========== PATHS ==========
+paths:
+  data_dir: data
+  manifest_train: data/manifests/train.json
+  manifest_val: data/manifests/val.json
+  checkpoint_dir: checkpoints
+  log_dir: logs
+  sample_dir: samples
+
+# Alias for compatibility with train scripts
+output:
+  checkpoint_dir: checkpoints
+  sample_dir: samples
+  log_dir: logs
+
+# Compatibility alias for training config  
+training:
+  segment_length: 88200       # 4 seconds at 22050Hz
+  autoencoder:
+    num_workers: 8
+
+# ========== DATA CONSTRAINTS ==========
+data:
+  train_manifest: data/manifests/train.json
+  val_manifest: data/manifests/val.json
+  min_audio_duration: 0.5     # Skip very short clips
+  max_audio_duration: 15.0    # Skip very long clips
+  max_text_length: 500
+
+# ========== LOGGING ==========
+logging:
+  project: supertonic-v2-uk-22k
+  log_interval: 100
+  use_wandb: true

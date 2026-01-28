@@ -266,9 +266,9 @@ def discover_test_samples(manifest_path: str, num_samples: int = 10, dataset_fil
         samples = [s for s in samples if dataset_filter.lower() in s.get("audio_path", "").lower()]
         print(f"   Filtered to {len(samples)} samples matching '{dataset_filter}'")
     
-    # Filter samples with text (only if not filtering by dataset - OpenTTS may have empty text)
-    if not dataset_filter:
-        samples = [s for s in samples if s.get("text")]
+    # Filter samples with sufficient text (min 10 chars to avoid conv kernel issues)
+    samples = [s for s in samples if s.get("text") and len(s.get("text", "")) >= 10]
+    print(f"   Samples with text (>=10 chars): {len(samples)}")
     
     # Random sample
     if len(samples) > num_samples:

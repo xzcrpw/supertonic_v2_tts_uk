@@ -5,19 +5,62 @@ import torch
 import torchaudio
 import json
 import sys
+import os
+import glob
+
+def find_tts_checkpoint():
+    """Find the latest TTS checkpoint in various possible locations."""
+    search_paths = [
+        'outputs/text_to_latent/checkpoints/*.pt',  # Found here!
+        'checkpoints/tts/*.pt',
+        'checkpoints/text_to_latent/*.pt',
+        'checkpoints/stage2/*.pt',
+        'outputs/*.pt',
+        'outputs/tts/*.pt',
+        'outputs/checkpoints/*.pt',
+        '*.pt',
+    ]
+    
+    all_checkpoints = []
+    for pattern in search_paths:
+        all_checkpoints.extend(glob.glob(pattern))
+    
+    # Filter for TTS-related checkpoints
+    tts_ckpts = [c for c in all_checkpoints if 'autoencoder' not in c.lower()]
+    
+    if not tts_ckpts:
+        # List all directories to help find
+        print("No TTS checkpoints found. Searching all directories...")
+        for root, dirs, files in os.walk('.'):
+            pt_files = [f for f in files if f.endswith('.pt')]
+            if pt_files and 'autoencoder' not in root:
+                print(f"  {root}: {pt_files[:5]}...")
+        return None
+    
+    # Sort by modification time, get latest
+    tts_ckpts.sort(key=os.path.getmtime, reverse=True)
+    return tts_ckpts[0]
 
 def main():
     device = 'cuda'
     
     # ========== 1. Check checkpoint structure ==========
     print("=" * 60)
-    print("STEP 1: Checking checkpoint structure")
+    print("STEP 1: Finding and checking checkpoints")
     print("=" * 60)
     
     enc_ckpt = torch.load('checkpoints/autoencoder/checkpoint_150000.pt', map_location=device)
     print(f"Autoencoder checkpoint keys: {list(enc_ckpt.keys())}")
     
-    tts_ckpt = torch.load('checkpoints/tts/checkpoint_102000.pt', map_location=device)
+    # Find TTS checkpoint
+    tts_path = find_tts_checkpoint()
+    if tts_path is None:
+        print("\nERROR: Cannot find TTS checkpoint!")
+        print("Run: find . -name '*.pt' -type f | head -20")
+        sys.exit(1)
+    
+    print(f"\nFound TTS checkpoint: {tts_path}")
+    tts_ckpt = torch.load(tts_path, map_location=device)
     print(f"TTS checkpoint keys: {list(tts_ckpt.keys())}")
     
     # Determine the correct key for model weights

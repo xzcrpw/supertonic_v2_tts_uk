@@ -118,22 +118,24 @@ def check_dependencies():
 # AUDIO PROCESSING
 # ============================================================================
 
-def get_audio_duration(audio_path: str, target_sr: int = 22050) -> float:
+def get_audio_duration(audio_path: str, target_sr: int = 22050) -> Optional[float]:
     """Get audio duration in seconds. Works with different torchaudio versions."""
+    audio_path = str(audio_path)
+    
+    # Method 1: Try torchaudio.info (older versions)
     try:
-        # Try torchaudio.info first (older versions)
-        if hasattr(torchaudio, 'info'):
-            info = torchaudio.info(str(audio_path))
-            return info.num_frames / info.sample_rate
-    except:
+        info = torchaudio.info(audio_path)
+        return info.num_frames / info.sample_rate
+    except (AttributeError, Exception):
         pass
     
-    # Fallback: load audio and calculate duration
+    # Method 2: Load audio and calculate duration
     try:
-        waveform, sr = torchaudio.load(str(audio_path))
+        waveform, sr = torchaudio.load(audio_path)
         return waveform.shape[1] / sr
-    except:
-        return 0.0
+    except Exception as e:
+        print(f"      ⚠️ Could not read {audio_path}: {e}")
+        return None
 
 
 def process_audio_file(args) -> Optional[Dict]:
@@ -322,7 +324,8 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
         sys.stdout.flush()
         
         start_time = time.time()
-        ds = load_dataset("speechcolab/vctk", split="train", num_proc=4)
+        # VCTK: https://huggingface.co/datasets/CSTR-Edinburgh/vctk
+        ds = load_dataset("CSTR-Edinburgh/vctk", split="train", num_proc=4)
         print(f"   ✅ Dataset loaded in {time.time() - start_time:.1f}s ({len(ds)} samples)")
         sys.stdout.flush()
         
@@ -456,11 +459,13 @@ def download_libritts(
         sys.stdout.flush()
         
         start_time = time.time()
-        # LibriTTS-R on HuggingFace: blabble-io/libritts_r
+        # LibriTTS-R: config="clean", split="train.clean.100" or "train.clean.360"
+        # Subset mapping: clean-100 -> train.clean.100, clean-360 -> train.clean.360
+        split_name = f"train.{subset.replace('-', '.')}"
         ds = load_dataset(
             "blabble-io/libritts_r",
-            subset.replace("-", "."),  # clean-100 -> clean.100
-            split="train",
+            "clean",  # config name
+            split=split_name,  # e.g., "train.clean.100"
             num_proc=4
         )
         print(f"   ✅ Dataset loaded in {time.time() - start_time:.1f}s ({len(ds)} samples)")
@@ -534,15 +539,32 @@ def create_manifests(
     print("📝 Creating manifests for Stage 2...")
     print("="*70)
     
+    # Debug: show sample entries
+    if entries:
+        print(f"\n   📊 Sample entry for debugging:")
+        sample = entries[0]
+        print(f"      duration: {sample.get('duration', 'N/A')}")
+        print(f"      text length: {len(sample.get('text', ''))}")
+        print(f"      speaker_id: {sample.get('speaker_id', 'N/A')}")
+    
     # Filter
     filtered = []
+    rejected_duration = 0
+    rejected_text = 0
     for e in entries:
         dur = e.get("duration", 0)
         text = e.get("text", "")
-        if min_duration <= dur <= max_duration and len(text) >= min_text_length:
-            filtered.append(e)
+        if dur is None or dur < min_duration or dur > max_duration:
+            rejected_duration += 1
+            continue
+        if len(text) < min_text_length:
+            rejected_text += 1
+            continue
+        filtered.append(e)
     
-    print(f"   Total entries: {len(entries)}")
+    print(f"\n   Total entries: {len(entries)}")
+    print(f"   Rejected (duration): {rejected_duration}")
+    print(f"   Rejected (text too short): {rejected_text}")
     print(f"   After filtering: {len(filtered)}")
     
     # Count speakers

@@ -389,7 +389,7 @@ def main():
         n_fft=config["audio"]["n_fft"],
         hop_length=config["audio"]["hop_length"],
         n_mels=config["audio"]["n_mels"],
-    )
+    ).to(device)  # Move to GPU
     
     # Create output directory
     output_dir = Path(args.output_dir)

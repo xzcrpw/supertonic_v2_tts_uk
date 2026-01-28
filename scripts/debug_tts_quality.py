@@ -86,6 +86,14 @@ def main():
     else:
         tts_state = tts_ckpt
     
+    # Remove 'module.' prefix from DDP checkpoints
+    def strip_module_prefix(state_dict):
+        return {k.replace('module.', ''): v for k, v in state_dict.items()}
+    
+    enc_state = strip_module_prefix(enc_state)
+    dec_state = strip_module_prefix(dec_state)
+    tts_state = strip_module_prefix(tts_state)
+    
     print(f"\nEncoder state dict - first 5 keys: {list(enc_state.keys())[:5]}")
     print(f"TTS state dict - first 5 keys: {list(tts_state.keys())[:5]}")
     

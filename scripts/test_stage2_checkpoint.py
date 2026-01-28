@@ -250,13 +250,24 @@ def list_checkpoints(checkpoint_dir: str) -> List[str]:
     return sorted([str(cp) for cp in checkpoints], key=lambda x: get_step(Path(x)))
 
 
-def discover_test_samples(manifest_path: str, num_samples: int = 10) -> List[dict]:
-    """Get random samples from validation manifest."""
+def discover_test_samples(manifest_path: str, num_samples: int = 10, dataset_filter: str = None) -> List[dict]:
+    """Get random samples from validation manifest.
+    
+    Args:
+        manifest_path: Path to manifest JSON
+        num_samples: Number of samples to return
+        dataset_filter: Optional filter by dataset name (e.g., 'opentts' for Ukrainian)
+    """
     with open(manifest_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
     
     # Filter samples with text
     samples = [s for s in samples if s.get("text")]
+    
+    # Filter by dataset if specified
+    if dataset_filter:
+        samples = [s for s in samples if dataset_filter.lower() in s.get("audio_path", "").lower()]
+        print(f"   Filtered to {len(samples)} samples matching '{dataset_filter}'")
     
     # Random sample
     if len(samples) > num_samples:
@@ -310,6 +321,8 @@ def main():
     parser.add_argument("--num-samples", type=int, default=5)
     parser.add_argument("--nfe", type=int, default=32, help="ODE solver steps")
     parser.add_argument("--cfg-scale", type=float, default=3.0)
+    parser.add_argument("--dataset", type=str, default="opentts", 
+                        help="Filter by dataset name (default: opentts for Ukrainian)")
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
     
@@ -370,14 +383,19 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Get test samples
+    # Get test samples (filter by dataset, default: opentts for Ukrainian)
     if Path(args.val_manifest).exists():
-        samples = discover_test_samples(args.val_manifest, args.num_samples)
+        samples = discover_test_samples(args.val_manifest, args.num_samples, args.dataset)
     else:
         print(f"❌ Validation manifest not found: {args.val_manifest}")
         return
     
+    if not samples:
+        print(f"❌ No samples found matching dataset filter '{args.dataset}'")
+        return
+    
     print(f"\n🔬 Testing {len(samples)} samples...")
+    print(f"   NFE: {args.nfe}, CFG: {args.cfg_scale}")
     print(f"   NFE: {args.nfe}, CFG: {args.cfg_scale}")
     
     results = []

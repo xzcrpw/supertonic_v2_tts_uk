@@ -46,8 +46,10 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 import tarfile
 import shutil
 import time
+import multiprocessing
 
-NUM_WORKERS = 16  # Parallel audio processing
+# Use most of available CPUs for parallel processing
+NUM_WORKERS = min(64, multiprocessing.cpu_count())
 
 try:
     from tqdm import tqdm
@@ -228,30 +230,48 @@ def download_opentts(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dic
             ds = load_dataset(repo_id, split="train")
             voice_dir.mkdir(exist_ok=True)
             
-            for idx, item in tqdm(enumerate(ds), desc=voice_name, total=len(ds)):
-                audio_array = item["audio"]["array"]
-                sr = item["audio"]["sampling_rate"]
-                text = item.get("text", item.get("sentence", ""))
-                
-                waveform = torch.tensor(audio_array).unsqueeze(0).float()
-                if sr != target_sr:
-                    resampler = torchaudio.transforms.Resample(sr, target_sr)
-                    waveform = resampler(waveform)
-                
-                audio_path = voice_dir / f"{voice_name}_{idx:06d}.wav"
-                torchaudio.save(str(audio_path), waveform, target_sr)
-                
-                duration = waveform.shape[1] / target_sr
-                
-                entries.append({
-                    "audio_path": str(audio_path.relative_to(output_dir)),
-                    "text": text,
-                    "speaker_id": f"opentts_{voice_name}",
-                    "duration": round(duration, 3),
-                    "sample_rate": target_sr,
-                    "source": "opentts",
-                    "language": "uk",
-                })
+            # Process in parallel using ThreadPoolExecutor
+            def process_item(args):
+                idx, item = args
+                try:
+                    audio_array = item["audio"]["array"]
+                    sr = item["audio"]["sampling_rate"]
+                    text = item.get("text", item.get("sentence", ""))
+                    
+                    waveform = torch.tensor(audio_array).unsqueeze(0).float()
+                    if sr != target_sr:
+                        resampler = torchaudio.transforms.Resample(sr, target_sr)
+                        waveform = resampler(waveform)
+                    
+                    audio_path = voice_dir / f"{voice_name}_{idx:06d}.wav"
+                    torchaudio.save(str(audio_path), waveform, target_sr)
+                    
+                    duration = waveform.shape[1] / target_sr
+                    
+                    return {
+                        "audio_path": str(audio_path.relative_to(output_dir)),
+                        "text": text,
+                        "speaker_id": f"opentts_{voice_name}",
+                        "duration": round(duration, 3),
+                        "sample_rate": target_sr,
+                        "source": "opentts",
+                        "language": "uk",
+                    }
+                except:
+                    return None
+            
+            # Use ThreadPoolExecutor for I/O bound tasks
+            with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+                results = list(tqdm(
+                    executor.map(process_item, enumerate(ds)),
+                    desc=voice_name,
+                    total=len(ds)
+                ))
+            
+            # Filter None results and add to entries
+            for r in results:
+                if r is not None:
+                    entries.append(r)
             
             speakers.add(f"opentts_{voice_name}")
             print(f"   ✅ {voice_name}: {len([e for e in entries if e['speaker_id'] == f'opentts_{voice_name}'])} samples")
@@ -337,18 +357,24 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
         print(f"   ✅ Dataset loaded in {time.time() - start_time:.1f}s ({len(ds)} samples)")
         sys.stdout.flush()
         
-        print("   🔄 Processing audio files...")
-        for item in tqdm(ds, desc="VCTK", total=len(ds)):
+        print("   🔄 Processing audio files with {0} workers...".format(NUM_WORKERS))
+        
+        # Prepare items for parallel processing
+        items_to_process = list(enumerate(ds))
+        processed_count = [0]  # Use list for mutable counter in closure
+        lock = __import__('threading').Lock()
+        
+        def process_vctk_item(args):
+            idx, item = args
             try:
                 audio = item["audio"]
                 speaker = item["speaker_id"]
                 text = item.get("text", "")
                 
                 speaker_dir = audio_dir / speaker
-                speaker_dir.mkdir(exist_ok=True)
-                
-                speaker_id = f"vctk_{speaker}"
-                speakers.add(speaker_id)
+                with lock:
+                    speaker_dir.mkdir(exist_ok=True)
+                    speakers.add(f"vctk_{speaker}")
                 
                 audio_array = audio["array"]
                 sr = audio["sampling_rate"]
@@ -358,24 +384,34 @@ def download_vctk(output_dir: Path, target_sr: int = 22050) -> Tuple[List[Dict],
                     resampler = torchaudio.transforms.Resample(sr, target_sr)
                     waveform = resampler(waveform)
                 
-                filename = f"{speaker}_{len(entries):06d}.wav"
+                filename = f"{speaker}_{idx:06d}.wav"
                 audio_path = speaker_dir / filename
                 torchaudio.save(str(audio_path), waveform, target_sr)
                 
                 duration = waveform.shape[1] / target_sr
                 
-                entries.append({
+                return {
                     "audio_path": str(audio_path.relative_to(output_dir)),
                     "text": text,
-                    "speaker_id": speaker_id,
+                    "speaker_id": f"vctk_{speaker}",
                     "duration": round(duration, 3),
                     "sample_rate": target_sr,
                     "source": "vctk",
                     "language": "en",
-                })
-                    
-            except Exception as e:
-                continue
+                }
+            except:
+                return None
+        
+        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            results = list(tqdm(
+                executor.map(process_vctk_item, items_to_process),
+                desc="VCTK",
+                total=len(items_to_process)
+            ))
+        
+        for r in results:
+            if r is not None:
+                entries.append(r)
         
         print(f"   ✅ VCTK: {len(entries)} samples, {len(speakers)} speakers")
         
@@ -479,19 +515,23 @@ def download_libritts(
         print(f"   ✅ Dataset loaded in {time.time() - start_time:.1f}s ({len(ds)} samples)")
         sys.stdout.flush()
         
-        print("   🔄 Processing audio files...")
-        for item in tqdm(ds, desc=f"LibriTTS {subset}", total=len(ds)):
+        print("   🔄 Processing audio files with {0} workers...".format(NUM_WORKERS))
+        
+        items_to_process = list(enumerate(ds))
+        lock = __import__('threading').Lock()
+        
+        def process_libritts_item(args):
+            idx, item = args
             try:
                 audio = item["audio"]
                 speaker = str(item["speaker_id"])
                 text = item.get("text_normalized", item.get("text", ""))
-                utterance_id = item.get("id", str(len(entries)))
+                utterance_id = item.get("id", str(idx))
                 
                 speaker_dir = audio_dir / speaker
-                speaker_dir.mkdir(exist_ok=True)
-                
-                speaker_id = f"libritts_{speaker}"
-                speakers.add(speaker_id)
+                with lock:
+                    speaker_dir.mkdir(exist_ok=True)
+                    speakers.add(f"libritts_{speaker}")
                 
                 audio_array = audio["array"]
                 sr = audio["sampling_rate"]
@@ -507,18 +547,28 @@ def download_libritts(
                 
                 duration = waveform.shape[1] / target_sr
                 
-                entries.append({
+                return {
                     "audio_path": str(audio_path.relative_to(output_dir)),
                     "text": text,
-                    "speaker_id": speaker_id,
+                    "speaker_id": f"libritts_{speaker}",
                     "duration": round(duration, 3),
                     "sample_rate": target_sr,
                     "source": "libritts",
                     "language": "en",
-                })
-                    
-            except Exception as e:
-                continue
+                }
+            except:
+                return None
+        
+        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            results = list(tqdm(
+                executor.map(process_libritts_item, items_to_process),
+                desc=f"LibriTTS {subset}",
+                total=len(items_to_process)
+            ))
+        
+        for r in results:
+            if r is not None:
+                entries.append(r)
         
         print(f"   ✅ LibriTTS-R {subset}: {len(entries)} samples, {len(speakers)} speakers")
         
